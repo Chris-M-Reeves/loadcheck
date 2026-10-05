@@ -111,7 +111,14 @@ function startSync() {
     setter(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     setStatus(!snap.metadata.fromCache); renderAll();
   }, err => { setStatus(false); console.error(err); }));
-  unsubs.push(onSnapshot(doc(db, "stores", storeId), s => { storeData = s.data() || {}; }));
+  unsubs.push(onSnapshot(doc(db, "stores", storeId), s => {
+    storeData = s.data() || {};
+    // If another tablet changed the store password, sign this one out so it must use the new password
+    const ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null");
+    if (ses && storeData.pwHash && ses.h !== storeData.pwHash) {
+      sessionStorage.clear(); alert("The store password was changed. Please sign in again."); location.reload();
+    }
+  }));
   sync(query(col("staff"), orderBy("first")), v => staff = v);
   sync(col("timers"), v => timers = v);
   sync(query(col("logs"), orderBy("endMs", "desc")), v => logs = v);
@@ -202,7 +209,7 @@ function renderStaff() {
 
 /* ---------------------------- ADMIN ---------------------------- */
 let adminOK = sessionStorage.getItem("lrt.admin") === "1";
-$("pinForm").addEventListener("submit", e => {
+$("pinGate").addEventListener("submit", e => {
   e.preventDefault();
   if ($("pinIn").value === (storeData.pin || DEFAULT_PIN)) { adminOK = true; sessionStorage.setItem("lrt.admin", "1"); $("pinErr").textContent = ""; renderAdmin(); }
   else $("pinErr").textContent = "Incorrect PIN.";
@@ -214,6 +221,21 @@ $("pinChange").addEventListener("submit", async e => {
   if (!/^\d{4}$/.test(p)) return $("pinMsg").textContent = "PIN must be exactly 4 digits.";
   await updateDoc(doc(db, "stores", storeId), { pin: p });
   $("newPin").value = ""; $("pinMsg").textContent = "PIN changed on all tablets.";
+});
+$("pwChange").addEventListener("submit", async e => {
+  e.preventDefault();
+  const msg = (t, ok = false) => { $("pwMsg").textContent = t; $("pwMsg").className = "text-sm " + (ok ? "text-emerald-400" : "text-red-400"); };
+  if (await hash(storeId + ":" + $("curPw").value) !== storeData.pwHash) return msg("Current password is incorrect.");
+  const n = $("newPw").value;
+  if (n.length < 4) return msg("New password must be at least 4 characters.");
+  if (n !== $("newPw2").value) return msg("The new passwords don't match.");
+  const h = await hash(storeId + ":" + n), old = sessionStorage.getItem("lrt.session");
+  // Update this tablet's session first so it isn't signed out by its own change
+  sessionStorage.setItem("lrt.session", JSON.stringify({ ...JSON.parse(old), h }));
+  try {
+    await updateDoc(doc(db, "stores", storeId), { pwHash: h });
+    e.target.reset(); msg("Password changed. Other tablets will ask for the new password.", true);
+  } catch { sessionStorage.setItem("lrt.session", old); msg("Could not save. Check your connection and try again."); }
 });
 $("lockBtn").addEventListener("click", () => { adminOK = false; sessionStorage.removeItem("lrt.admin"); renderAdmin(); });
 ["fFrom", "fTo", "fStaff"].forEach(i => $(i).addEventListener("input", renderLogs));
@@ -376,6 +398,15 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
             <input id="newPin" inputmode="numeric" maxlength="4" pattern="\d{4}" class="h-12 w-32 rounded-lg bg-slate-800 border border-slate-600 px-3 text-center tracking-widest"></div>
           <button class="h-12 px-5 rounded-lg border border-slate-600">Save PIN</button>
           <span id="pinMsg" class="text-sm text-slate-400"></span>
+        </form>
+
+        <form id="pwChange" class="border-t border-slate-800 pt-4 space-y-2 max-w-md">
+          <h3 class="font-bold">Change store password</h3>
+          <input id="curPw" type="password" required placeholder="Current password" aria-label="Current password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
+          <input id="newPw" type="password" required minlength="4" placeholder="New password" aria-label="New password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
+          <input id="newPw2" type="password" required minlength="4" placeholder="Confirm new password" aria-label="Confirm new password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
+          <button class="h-12 px-5 rounded-lg border border-slate-600">Change password</button>
+          <p id="pwMsg" class="text-sm" role="status"></p>
         </form>
       </div>
     </section>
