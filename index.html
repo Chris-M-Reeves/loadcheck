@@ -115,8 +115,8 @@ function startSync() {
     storeData = s.data() || {};
     // If another tablet changed the store password, sign this one out so it must use the new password
     const ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null");
-    if (ses && storeData.pwHash && ses.h !== storeData.pwHash) {
-      sessionStorage.clear(); alert("The store password was changed. Please sign in again."); location.reload();
+    if (ses && storeData.pwHash && ses.h !== storeData.pwHash && !s.metadata.fromCache && !s.metadata.hasPendingWrites) {
+      sessionStorage.removeItem("lrt.session"); alert("The store password was changed. Please sign in again."); location.reload();
     }
   }));
   sync(query(col("staff"), orderBy("first")), v => staff = v);
@@ -211,7 +211,7 @@ function renderStaff() {
 let adminOK = sessionStorage.getItem("lrt.admin") === "1";
 $("pinGate").addEventListener("submit", e => {
   e.preventDefault();
-  if ($("pinIn").value === (storeData.pin || DEFAULT_PIN)) { adminOK = true; sessionStorage.setItem("lrt.admin", "1"); $("pinErr").textContent = ""; renderAdmin(); }
+  if ($("pinIn").value.trim() === String(storeData.pin ?? DEFAULT_PIN)) { adminOK = true; sessionStorage.setItem("lrt.admin", "1"); $("pinErr").textContent = ""; renderAdmin(); }
   else $("pinErr").textContent = "Incorrect PIN.";
   $("pinIn").value = "";
 });
@@ -305,14 +305,15 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
 /* ---------------------------- BOOT ---------------------------- */
 (async () => {
   if (!configured) return showErr("Firebase is not configured. Paste your keys into firebaseConfig in this file.");
-  const s = JSON.parse(sessionStorage.getItem("lrt.session") || "null");
-  if (s) try { await login(s.id, s.h, true); } catch { sessionStorage.clear(); }
+  let ses = null;
+  try { ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null"); } catch {}
+  if (ses && ses.id) { storeId = ses.id; startSync(); } // the store-doc listener signs out if the password changed
 })();
 </script>
 
 <!-- LOGIN -->
 <div id="loginScreen" class="min-h-screen flex items-center justify-center p-4">
-  <form id="loginForm" class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-4">
+  <form id="loginForm" onsubmit="return false" class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-4">
     <h1 class="text-3xl font-extrabold">Load run timer</h1>
     <div><label for="storeId" class="block mb-1 font-medium">Store ID</label>
       <input id="storeId" required autocomplete="off" class="w-full h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg"></div>
@@ -328,7 +329,7 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
 <div id="app" class="hidden">
   <header class="bg-slate-900 border-b border-slate-700 px-4 py-3">
     <div class="max-w-6xl mx-auto flex flex-wrap items-center gap-3">
-      <div class="mr-auto"><div class="text-xs text-slate-400">Store</div><div id="storeLabel" class="font-extrabold text-lg leading-none"></div></div>
+      <div class="mr-auto"><div class="text-xs text-slate-400">Store</div><div id="storeLabel" class="font-extrabold text-lg leading-none"></div><div class="text-[10px] text-slate-500">v4</div></div>
       <nav class="flex gap-2">
         <button id="tab-home" data-act="tab" data-page="home">Home</button>
         <button id="tab-staff" data-act="tab" data-page="staff">Staff</button>
@@ -351,7 +352,7 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
     <!-- STAFF -->
     <section id="page-staff" class="hidden max-w-2xl">
       <h2 class="text-xl font-bold mb-3">Staff roster</h2>
-      <form id="staffForm" class="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+      <form id="staffForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
         <input id="firstName" required maxlength="30" placeholder="First name" aria-label="First name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
         <input id="lastName" required maxlength="30" placeholder="Last name" aria-label="Last name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
         <button class="h-14 px-6 rounded-lg bg-white text-slate-900 font-bold">Add staff</button>
@@ -361,7 +362,7 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
 
     <!-- ADMIN -->
     <section id="page-admin" class="hidden">
-      <form id="pinGate" class="max-w-sm space-y-3">
+      <form id="pinGate" onsubmit="return false" class="max-w-sm space-y-3">
         <h2 class="text-xl font-bold">Manager PIN</h2>
         <input id="pinIn" type="password" inputmode="numeric" maxlength="4" pattern="\d{4}" required aria-label="4-digit PIN" class="w-full h-16 rounded-lg bg-slate-800 border border-slate-600 px-4 text-3xl tracking-[1em] text-center">
         <p id="pinErr" class="text-red-400 min-h-[1.5rem]" role="alert"></p>
@@ -393,14 +394,14 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
           <p id="exMsg" class="text-sm mt-2" role="status"></p>
         </div>
 
-        <form id="pinChange" class="border-t border-slate-800 pt-4 flex flex-wrap items-end gap-2">
+        <form id="pinChange" onsubmit="return false" class="border-t border-slate-800 pt-4 flex flex-wrap items-end gap-2">
           <div><label for="newPin" class="block text-sm mb-1">Change manager PIN</label>
             <input id="newPin" inputmode="numeric" maxlength="4" pattern="\d{4}" class="h-12 w-32 rounded-lg bg-slate-800 border border-slate-600 px-3 text-center tracking-widest"></div>
           <button class="h-12 px-5 rounded-lg border border-slate-600">Save PIN</button>
           <span id="pinMsg" class="text-sm text-slate-400"></span>
         </form>
 
-        <form id="pwChange" class="border-t border-slate-800 pt-4 space-y-2 max-w-md">
+        <form id="pwChange" onsubmit="return false" class="border-t border-slate-800 pt-4 space-y-2 max-w-md">
           <h3 class="font-bold">Change store password</h3>
           <input id="curPw" type="password" required placeholder="Current password" aria-label="Current password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
           <input id="newPw" type="password" required minlength="4" placeholder="New password" aria-label="New password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
