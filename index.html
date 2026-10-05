@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Load Run Timer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- EmailJS SDK (used by "Email results" on the Admin page) -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  .pick { border: 4px solid #334155; background: #0f172a; transition: box-shadow .15s, border-color .15s; }
+  .pick.sel { border-color: #fff; box-shadow: 0 0 0 4px var(--c), 0 0 36px 6px var(--c); }
+  .area { border: 4px solid var(--c); background: color-mix(in srgb, var(--c) 18%, #0f172a); }
+  .area.sel { border-color: #fff; box-shadow: 0 0 0 4px var(--c), 0 0 36px 6px var(--c); background: color-mix(in srgb, var(--c) 40%, #0f172a); }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+
+<!--
+=====================================================================
+ SETUP 1: FIREBASE
+ 1. console.firebase.google.com -> Add project.
+ 2. Build -> Firestore Database -> Create database.
+ 3. Project settings -> Your apps -> Web (</>) -> copy the config values.
+ 4. Paste them into firebaseConfig below.
+ 5. Firestore -> Rules: see the note at the bottom of this file.
+
+ SETUP 2: EMAILJS (optional, for the Admin "Email results" button)
+ Service ID, Template ID and Public Key come from emailjs.com.
+ Template variables: {{to_email}}, {{subject}}, {{{html_table}}}
+=====================================================================
+-->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, doc, collection, getDoc, setDoc, addDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy }
+  from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+/* ---------------------------- CONFIG ---------------------------- */
+const firebaseConfig = {
+  apiKey:            "YOUR_API_KEY",
+  authDomain:        "YOUR_PROJECT.firebaseapp.com",
+  projectId:         "YOUR_PROJECT_ID",
+  storageBucket:     "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId:             "YOUR_APP_ID"
+};
+const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
+const DEFAULT_PIN = "1234"; // used until a manager changes it on the Admin page
+/* ---------------------------------------------------------------- */
+
+const AREAS = { "Ambient": "#14b8a6", "Long Life": "#f59e0b", "Freezer": "#7dd3fc" };
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, "0");
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const mmss = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+const fmtDT = ms => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "medium" });
+const ymd = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const elapsed = t => (t.acc || 0) + (t.resumedAt ? Date.now() - t.resumedAt : 0);
+const full = s => `${s.first} ${s.last}`;
+
+let db, storeId = null, storeData = {}, staff = [], timers = [], logs = [];
+let selStaff = null, selArea = null, unsubs = [], page = "home";
+const configured = !firebaseConfig.apiKey.startsWith("YOUR_");
+if (configured) db = getFirestore(initializeApp(firebaseConfig));
+const col = name => collection(db, "stores", storeId, name);
+
+async function hash(text) {
+  if (crypto.subtle) { // needs HTTPS or localhost
+    const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+  let h = 5381; for (const c of text) h = ((h << 5) + h + c.charCodeAt(0)) | 0; return "weak" + h; // fallback on plain http
+}
+
+/* ---------------------------- LOGIN ---------------------------- */
+async function login(id, pw, fromSession) {
+  const ref = doc(db, "stores", id), snap = await getDoc(ref);
+  const h = fromSession ? pw : await hash(id + ":" + pw);
+  if (!snap.exists()) {
+    if (fromSession) throw new Error("Store not found");
+    await setDoc(ref, { pwHash: h, pin: DEFAULT_PIN, created: Date.now() }); // first login creates the store
+  } else if (snap.data().pwHash !== h) throw new Error("Wrong store ID or password");
+  sessionStorage.setItem("lrt.session", JSON.stringify({ id, h }));
+  storeId = id; startSync();
+}
+
+$("loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const id = $("storeId").value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (!id) return showErr("Enter a Store ID using letters, numbers, - or _.");
+  $("loginBtn").disabled = true; showErr("");
+  try { await login(id, $("storePw").value); } catch (err) { showErr(err.message || "Could not sign in. Check your connection."); }
+  $("loginBtn").disabled = false;
+});
+function showErr(m) { $("loginErr").textContent = m; }
+
+$("logout").addEventListener("click", () => {
+  unsubs.forEach(u => u()); unsubs = [];
+  sessionStorage.clear(); location.reload();
+});
+
+/* ---------------------------- LIVE SYNC ---------------------------- */
+function startSync() {
+  $("loginScreen").classList.add("hidden"); $("app").classList.remove("hidden");
+  $("storeLabel").textContent = storeId;
+  const sync = (q, setter) => unsubs.push(onSnapshot(q, snap => {
+    setter(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    setStatus(!snap.metadata.fromCache); renderAll();
+  }, err => { setStatus(false); console.error(err); }));
+  unsubs.push(onSnapshot(doc(db, "stores", storeId), s => { storeData = s.data() || {}; }));
+  sync(query(col("staff"), orderBy("first")), v => staff = v);
+  sync(col("timers"), v => timers = v);
+  sync(query(col("logs"), orderBy("endMs", "desc")), v => logs = v);
+  showPage(page);
+}
+function setStatus(live) {
+  $("dot").className = "inline-block w-3 h-3 rounded-full " + (live ? "bg-emerald-400" : "bg-red-500");
+  $("statusTxt").textContent = live ? "Live" : "Offline";
+}
+window.addEventListener("offline", () => setStatus(false));
+
+/* ---------------------------- NAV ---------------------------- */
+function showPage(p) {
+  page = p;
+  ["home", "staff", "admin"].forEach(n => {
+    $("page-" + n).classList.toggle("hidden", n !== p);
+    $("tab-" + n).className = "h-12 px-5 rounded-lg font-semibold " + (n === p ? "bg-white text-slate-900" : "bg-slate-800");
+  });
+  renderAll();
+}
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-act]"); if (!t) return;
+  const { act, id } = t.dataset;
+  const tm = timers.find(x => x.id === id);
+  if (act === "tab") showPage(t.dataset.page);
+  else if (act === "pickStaff") { selStaff = selStaff === id ? null : id; renderHome(); }
+  else if (act === "pickArea") { selArea = selArea === id ? null : id; renderHome(); }
+  else if (act === "start") {
+    const s = staff.find(x => x.id === selStaff);
+    await addDoc(col("timers"), { staffId: s.id, staffName: full(s), area: selArea, startedAt: Date.now(), acc: 0, resumedAt: Date.now() });
+    selStaff = selArea = null;
+  }
+  else if (act === "toggle") {
+    await updateDoc(doc(db, "stores", storeId, "timers", id), tm.resumedAt ? { acc: elapsed(tm), resumedAt: null } : { resumedAt: Date.now() });
+  }
+  else if (act === "complete") {
+    const ms = elapsed(tm);
+    await addDoc(col("logs"), { staffName: tm.staffName, area: tm.area, startMs: tm.startedAt, endMs: Date.now(), ms });
+    await deleteDoc(doc(db, "stores", storeId, "timers", id));
+  }
+  else if (act === "discard") { if (confirm("Discard this timer without saving?")) await deleteDoc(doc(db, "stores", storeId, "timers", id)); }
+  else if (act === "delStaff") { const s = staff.find(x => x.id === id); if (confirm(`Delete ${full(s)}? Past logs are kept.`)) await deleteDoc(doc(db, "stores", storeId, "staff", id)); }
+  else if (act === "delLog") { if (confirm("Delete this log entry?")) await deleteDoc(doc(db, "stores", storeId, "logs", id)); }
+});
+
+/* ---------------------------- HOME ---------------------------- */
+function renderHome() {
+  if (selStaff && !staff.some(s => s.id === selStaff)) selStaff = null;
+  $("staffPick").innerHTML = staff.length ? staff.map(s =>
+    `<button data-act="pickStaff" data-id="${s.id}" style="--c:#fff" class="pick ${s.id === selStaff ? "sel" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}</button>`).join("")
+    : '<p class="text-slate-400 col-span-full">No staff yet. Add people on the Staff tab.</p>';
+  $("areaPick").innerHTML = Object.entries(AREAS).map(([n, c]) =>
+    `<button data-act="pickArea" data-id="${n}" style="--c:${c}" class="area ${n === selArea ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${n}</button>`).join("");
+  $("startWrap").classList.toggle("hidden", !(selStaff && selArea));
+  renderTimers();
+}
+function renderTimers() {
+  $("timerList").innerHTML = timers.length ? timers.map(t => {
+    const c = AREAS[t.area] || "#fff", run = !!t.resumedAt;
+    return `<div class="rounded-xl p-4 bg-slate-900" style="border:4px solid ${c}">
+      <div class="flex justify-between gap-2"><b class="truncate">${esc(t.staffName)}</b><span class="font-semibold" style="color:${c}">${t.area}</span></div>
+      <div data-clock="${t.id}" class="tnum text-6xl font-extrabold text-center my-3">${mmss(elapsed(t))}</div>
+      <div class="text-center text-sm text-slate-400 mb-3">${run ? "Running" : "Paused"}</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-act="toggle" data-id="${t.id}" class="h-16 rounded-lg text-lg font-bold ${run ? "bg-slate-700" : "bg-white text-slate-900"}">${run ? "Pause" : "Resume"}</button>
+        <button data-act="complete" data-id="${t.id}" class="h-16 rounded-lg text-lg font-bold bg-emerald-600">Complete</button>
+      </div>
+      <button data-act="discard" data-id="${t.id}" class="w-full h-10 mt-2 text-sm text-red-400">Discard</button></div>`;
+  }).join("") : '<p class="text-slate-400 col-span-full">No timers running.</p>';
+}
+$("startBtn").dataset.act = "start";
+setInterval(() => timers.forEach(t => { const el = document.querySelector(`[data-clock="${t.id}"]`); if (el) el.textContent = mmss(elapsed(t)); }), 500);
+
+/* ---------------------------- STAFF ---------------------------- */
+$("staffForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const first = $("firstName").value.trim(), last = $("lastName").value.trim();
+  if (!first || !last) return;
+  await addDoc(col("staff"), { first, last });
+  e.target.reset(); $("firstName").focus();
+});
+function renderStaff() {
+  $("staffRows").innerHTML = staff.length ? staff.map(s =>
+    `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span>
+     <button data-act="delStaff" data-id="${s.id}" class="h-12 px-5 rounded-lg border border-red-500 text-red-400">Delete user</button></li>`).join("")
+    : '<li class="py-3 text-slate-400">No staff yet.</li>';
+}
+
+/* ---------------------------- ADMIN ---------------------------- */
+let adminOK = sessionStorage.getItem("lrt.admin") === "1";
+$("pinForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if ($("pinIn").value === (storeData.pin || DEFAULT_PIN)) { adminOK = true; sessionStorage.setItem("lrt.admin", "1"); $("pinErr").textContent = ""; renderAdmin(); }
+  else $("pinErr").textContent = "Incorrect PIN.";
+  $("pinIn").value = "";
+});
+$("pinChange").addEventListener("submit", async e => {
+  e.preventDefault();
+  const p = $("newPin").value;
+  if (!/^\d{4}$/.test(p)) return $("pinMsg").textContent = "PIN must be exactly 4 digits.";
+  await updateDoc(doc(db, "stores", storeId), { pin: p });
+  $("newPin").value = ""; $("pinMsg").textContent = "PIN changed on all tablets.";
+});
+$("lockBtn").addEventListener("click", () => { adminOK = false; sessionStorage.removeItem("lrt.admin"); renderAdmin(); });
+["fFrom", "fTo", "fStaff"].forEach(i => $(i).addEventListener("input", renderLogs));
+$("fClear").addEventListener("click", () => { $("fFrom").value = $("fTo").value = $("fStaff").value = ""; renderLogs(); });
+
+function renderAdmin() {
+  $("pinGate").classList.toggle("hidden", adminOK);
+  $("adminBody").classList.toggle("hidden", !adminOK);
+  if (adminOK) renderLogs();
+}
+function filtered() {
+  const f = $("fFrom").value, t = $("fTo").value, s = $("fStaff").value;
+  return logs.filter(l => (!f || ymd(l.endMs) >= f) && (!t || ymd(l.endMs) <= t) && (!s || l.staffName === s));
+}
+function renderLogs() {
+  const keep = $("fStaff").value, names = [...new Set(logs.map(l => l.staffName))].sort();
+  $("fStaff").innerHTML = '<option value="">All staff</option>' + names.map(n => `<option>${esc(n)}</option>`).join("");
+  if (names.includes(keep)) $("fStaff").value = keep;
+  const rows = filtered();
+  $("logRows").innerHTML = rows.length ? rows.map(l => `<tr class="border-t border-slate-800">
+    <td class="p-3 whitespace-nowrap">${fmtDT(l.endMs)}</td><td class="p-3">${esc(l.staffName)}</td>
+    <td class="p-3 font-semibold" style="color:${AREAS[l.area] || "#fff"}">${l.area}</td><td class="p-3 tnum font-bold">${mmss(l.ms)}</td>
+    <td class="p-3 text-right"><button data-act="delLog" data-id="${l.id}" class="h-11 px-4 rounded-lg border border-red-500 text-red-400">Delete</button></td></tr>`).join("")
+    : '<tr><td colspan="5" class="p-4 text-slate-400">No runs match these filters.</td></tr>';
+  $("count").textContent = rows.length ? `${rows.length} runs, average ${mmss(rows.reduce((n, l) => n + l.ms, 0) / rows.length)}` : "";
+}
+
+/* ---------------------------- EXPORT ---------------------------- */
+function say(m, ok = true) { $("exMsg").textContent = m; $("exMsg").className = "text-sm mt-2 " + (ok ? "text-emerald-400" : "text-red-400"); }
+function htmlTable(rows) {
+  const s = "border:1px solid #ccc;padding:6px 10px";
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px"><tr>` +
+    ["Date & Time", "Staff Name", "Order Area", "Duration (MM:SS)"].map(h => `<th style="${s};background:#eee;text-align:left">${h}</th>`).join("") + `</tr>` +
+    rows.map(l => `<tr><td style="${s}">${fmtDT(l.endMs)}</td><td style="${s}">${esc(l.staffName)}</td><td style="${s}">${l.area}</td><td style="${s}">${mmss(l.ms)}</td></tr>`).join("") + `</table>`;
+}
+$("btnCsv").addEventListener("click", () => {
+  const rows = filtered(); if (!rows.length) return say("No runs to export.", false);
+  const q = v => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = ["Date & Time,Staff Name,Order Area,Duration (MM:SS)", ...rows.map(l => [fmtDT(l.endMs), l.staffName, l.area, mmss(l.ms)].map(q).join(","))].join("\n");
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `load-runs-${storeId}-${ymd(Date.now())}.csv` });
+  a.click(); URL.revokeObjectURL(a.href); say("CSV downloaded.");
+});
+$("btnCopy").addEventListener("click", async () => {
+  const rows = filtered(); if (!rows.length) return say("No runs to copy.", false);
+  const html = htmlTable(rows);
+  try {
+    if (window.ClipboardItem) await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([html], { type: "text/plain" }) })]);
+    else await navigator.clipboard.writeText(html);
+    say("Table copied. Paste it into an email.");
+  } catch { say("Copy was blocked. Use HTTPS or try the CSV export.", false); }
+});
+$("btnEmail").addEventListener("click", async () => {
+  const rows = filtered(), to = $("emailTo").value.trim();
+  if (!rows.length) return say("No runs to send.", false);
+  if (!to) return say("Enter a recipient email.", false);
+  if (Object.values(EMAILJS_CONFIG).some(v => v.startsWith("YOUR_"))) return say("EmailJS is not configured. Add your keys at the top of the script, or use CSV / Copy table.", false);
+  say("Sending...");
+  try {
+    await emailjs.send(EMAILJS_CONFIG.service_id, EMAILJS_CONFIG.template_id,
+      { to_email: to, subject: `Load run report ${storeId} ${ymd(Date.now())}`, html_table: htmlTable(rows) }, { publicKey: EMAILJS_CONFIG.public_key });
+    say("Email sent.");
+  } catch (err) { say("Email failed: " + (err.text || err.message), false); }
+});
+
+function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
+
+/* ---------------------------- BOOT ---------------------------- */
+(async () => {
+  if (!configured) return showErr("Firebase is not configured. Paste your keys into firebaseConfig in this file.");
+  const s = JSON.parse(sessionStorage.getItem("lrt.session") || "null");
+  if (s) try { await login(s.id, s.h, true); } catch { sessionStorage.clear(); }
+})();
+</script>
+
+<!-- LOGIN -->
+<div id="loginScreen" class="min-h-screen flex items-center justify-center p-4">
+  <form id="loginForm" class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-4">
+    <h1 class="text-3xl font-extrabold">Load run timer</h1>
+    <div><label for="storeId" class="block mb-1 font-medium">Store ID</label>
+      <input id="storeId" required autocomplete="off" class="w-full h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg"></div>
+    <div><label for="storePw" class="block mb-1 font-medium">Store password</label>
+      <input id="storePw" type="password" required class="w-full h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg"></div>
+    <p id="loginErr" class="text-red-400 min-h-[1.5rem]" role="alert"></p>
+    <button id="loginBtn" class="w-full h-16 rounded-xl bg-white text-slate-900 text-xl font-extrabold disabled:opacity-50">Sign in</button>
+    <p class="text-sm text-slate-400">A new Store ID is created the first time someone signs in with it.</p>
+  </form>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <header class="bg-slate-900 border-b border-slate-700 px-4 py-3">
+    <div class="max-w-6xl mx-auto flex flex-wrap items-center gap-3">
+      <div class="mr-auto"><div class="text-xs text-slate-400">Store</div><div id="storeLabel" class="font-extrabold text-lg leading-none"></div></div>
+      <nav class="flex gap-2">
+        <button id="tab-home" data-act="tab" data-page="home">Home</button>
+        <button id="tab-staff" data-act="tab" data-page="staff">Staff</button>
+        <button id="tab-admin" data-act="tab" data-page="admin">Admin</button>
+      </nav>
+      <div class="flex items-center gap-2 text-sm"><span id="dot" class="inline-block w-3 h-3 rounded-full bg-red-500"></span><span id="statusTxt">Offline</span></div>
+      <button id="logout" class="h-12 px-4 rounded-lg border border-slate-600 text-sm">Log out</button>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto p-4">
+    <!-- HOME -->
+    <section id="page-home" class="space-y-6">
+      <div><h2 class="text-xl font-bold mb-2">1. Who is running?</h2><div id="staffPick" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
+      <div><h2 class="text-xl font-bold mb-2">2. Which area?</h2><div id="areaPick" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div></div>
+      <div id="startWrap" class="hidden"><button id="startBtn" class="w-full h-24 rounded-2xl bg-white text-slate-900 text-3xl font-extrabold">START TIMER</button></div>
+      <div><h2 class="text-xl font-bold mb-2">Running timers</h2><div id="timerList" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div></div>
+    </section>
+
+    <!-- STAFF -->
+    <section id="page-staff" class="hidden max-w-2xl">
+      <h2 class="text-xl font-bold mb-3">Staff roster</h2>
+      <form id="staffForm" class="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+        <input id="firstName" required maxlength="30" placeholder="First name" aria-label="First name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
+        <input id="lastName" required maxlength="30" placeholder="Last name" aria-label="Last name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
+        <button class="h-14 px-6 rounded-lg bg-white text-slate-900 font-bold">Add staff</button>
+      </form>
+      <ul id="staffRows" class="mt-4 divide-y divide-slate-800"></ul>
+    </section>
+
+    <!-- ADMIN -->
+    <section id="page-admin" class="hidden">
+      <form id="pinGate" class="max-w-sm space-y-3">
+        <h2 class="text-xl font-bold">Manager PIN</h2>
+        <input id="pinIn" type="password" inputmode="numeric" maxlength="4" pattern="\d{4}" required aria-label="4-digit PIN" class="w-full h-16 rounded-lg bg-slate-800 border border-slate-600 px-4 text-3xl tracking-[1em] text-center">
+        <p id="pinErr" class="text-red-400 min-h-[1.5rem]" role="alert"></p>
+        <button class="w-full h-14 rounded-lg bg-white text-slate-900 font-bold">Unlock</button>
+      </form>
+
+      <div id="adminBody" class="hidden space-y-5">
+        <div class="flex justify-between items-center"><h2 class="text-xl font-bold">Shift logs</h2><button id="lockBtn" class="h-11 px-4 rounded-lg border border-slate-600">Lock</button></div>
+        <div class="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto]">
+          <div><label for="fFrom" class="block text-sm mb-1">From</label><input id="fFrom" type="date" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></div>
+          <div><label for="fTo" class="block text-sm mb-1">To</label><input id="fTo" type="date" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></div>
+          <div><label for="fStaff" class="block text-sm mb-1">Staff</label><select id="fStaff" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></select></div>
+          <button id="fClear" class="h-12 self-end px-4 rounded-lg border border-slate-600">Clear</button>
+        </div>
+        <div id="count" class="text-sm text-slate-400"></div>
+        <div class="overflow-x-auto border border-slate-700 rounded-lg">
+          <table class="w-full text-left"><thead class="bg-slate-800"><tr><th class="p-3">Date &amp; time</th><th class="p-3">Staff name</th><th class="p-3">Order area</th><th class="p-3">Duration</th><th></th></tr></thead>
+          <tbody id="logRows"></tbody></table>
+        </div>
+
+        <div class="border-t border-slate-800 pt-4">
+          <h3 class="font-bold mb-2">Export the rows shown above</h3>
+          <div class="grid gap-2 sm:grid-cols-[2fr_auto_auto_auto]">
+            <input id="emailTo" type="email" placeholder="Recipient email" aria-label="Recipient email" class="h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
+            <button id="btnEmail" class="h-12 px-5 rounded-lg bg-white text-slate-900 font-bold">Email results</button>
+            <button id="btnCsv" class="h-12 px-5 rounded-lg border border-slate-600">Export CSV</button>
+            <button id="btnCopy" class="h-12 px-5 rounded-lg border border-slate-600">Copy table</button>
+          </div>
+          <p id="exMsg" class="text-sm mt-2" role="status"></p>
+        </div>
+
+        <form id="pinChange" class="border-t border-slate-800 pt-4 flex flex-wrap items-end gap-2">
+          <div><label for="newPin" class="block text-sm mb-1">Change manager PIN</label>
+            <input id="newPin" inputmode="numeric" maxlength="4" pattern="\d{4}" class="h-12 w-32 rounded-lg bg-slate-800 border border-slate-600 px-3 text-center tracking-widest"></div>
+          <button class="h-12 px-5 rounded-lg border border-slate-600">Save PIN</button>
+          <span id="pinMsg" class="text-sm text-slate-400"></span>
+        </form>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!--
+ FIRESTORE RULES (Firebase console -> Firestore -> Rules), to get started:
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{db}/documents {
+       match /stores/{store}/{document=**} { allow read, write: if true; }
+       match /stores/{store} { allow read, write: if true; }
+     }
+   }
+ This is open access: the store password is only checked in the browser.
+ For anything beyond internal use, add Firebase Anonymous Auth and tighten these rules.
+-->
+</body>
+</html>
