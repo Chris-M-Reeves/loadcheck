@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Load Run Timer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- EmailJS browser SDK (only needed for the "Send email" button) -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid #0f172a; outline-offset: 2px; }
+</style>
+</head>
+<body class="bg-stone-100 text-slate-900 min-h-screen">
+
+<!--
+=====================================================================
+ CONFIGURATION: EMAILJS SETUP
+ 1. Create a free account at https://www.emailjs.com
+ 2. Email Services -> Add service (Gmail/Outlook/etc). Copy the Service ID.
+ 3. Email Templates -> Create template. Use these variables in the body:
+        To Email: {{to_email}}      Subject: {{subject}}
+        Body:     {{{html_table}}}  (triple braces = unescaped HTML)
+    Copy the Template ID.
+ 4. Account -> General -> Public Key. Copy it.
+ 5. Paste the three values below. Until then the app uses the
+    "Copy table" and "Open in mail app" fallbacks.
+=====================================================================
+-->
+<script>
+const EMAILJS_CONFIG = {
+  service_id:  'YOUR_SERVICE_ID',
+  template_id: 'YOUR_TEMPLATE_ID',
+  public_key:  'YOUR_PUBLIC_KEY'
+};
+</script>
+
+<header class="bg-slate-900 text-white px-4 py-4">
+  <div class="max-w-6xl mx-auto flex items-center justify-between gap-3">
+    <h1 class="text-xl sm:text-2xl font-bold">Load run timer</h1>
+    <div id="clock" class="tnum text-slate-300 text-sm sm:text-base"></div>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto p-4 space-y-6">
+
+  <!-- ACTIVE TIMERS -->
+  <section class="bg-white rounded-xl border border-stone-300 p-4 sm:p-5">
+    <h2 class="text-lg font-bold mb-3">Active timers</h2>
+    <div class="grid gap-3 md:grid-cols-[1fr_2fr]">
+      <div>
+        <label for="startStaff" class="block text-sm font-medium mb-1">Staff member</label>
+        <select id="startStaff" class="w-full h-14 text-lg rounded-lg border border-slate-400 px-3 bg-white"></select>
+      </div>
+      <div>
+        <span class="block text-sm font-medium mb-1">Order area (tap to start)</span>
+        <div id="areaButtons" class="grid grid-cols-3 gap-2"></div>
+      </div>
+    </div>
+    <p id="startMsg" class="text-sm text-red-700 mt-2 min-h-[1.25rem]"></p>
+    <div id="timers" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mt-2"></div>
+  </section>
+
+  <!-- STAFF ROSTER -->
+  <section class="bg-white rounded-xl border border-stone-300 p-4 sm:p-5">
+    <h2 class="text-lg font-bold mb-3">Staff roster</h2>
+    <form id="staffForm" class="grid gap-2 sm:grid-cols-[2fr_2fr_auto]">
+      <input id="staffName" required maxlength="40" placeholder="Name" class="h-12 rounded-lg border border-slate-400 px-3" aria-label="Name">
+      <input id="staffRole" required maxlength="30" placeholder="Staff ID / role" class="h-12 rounded-lg border border-slate-400 px-3" aria-label="Staff ID or role">
+      <button class="h-12 px-6 rounded-lg bg-slate-900 text-white font-semibold active:bg-slate-700">Add staff</button>
+    </form>
+    <ul id="staffList" class="mt-3 divide-y divide-stone-200"></ul>
+  </section>
+
+  <!-- LOGS -->
+  <section class="bg-white rounded-xl border border-stone-300 p-4 sm:p-5">
+    <h2 class="text-lg font-bold mb-3">Shift logs and export</h2>
+    <div class="grid gap-2 sm:grid-cols-[1fr_1fr_auto] mb-3">
+      <div>
+        <label for="fDate" class="block text-sm font-medium mb-1">Date</label>
+        <input id="fDate" type="date" class="w-full h-12 rounded-lg border border-slate-400 px-3">
+      </div>
+      <div>
+        <label for="fStaff" class="block text-sm font-medium mb-1">Staff member</label>
+        <select id="fStaff" class="w-full h-12 rounded-lg border border-slate-400 px-3 bg-white"></select>
+      </div>
+      <button id="fClear" class="h-12 self-end px-5 rounded-lg border border-slate-400 font-medium">Clear filters</button>
+    </div>
+
+    <div id="summary" class="text-sm text-slate-600 mb-2"></div>
+    <div class="overflow-x-auto border border-stone-200 rounded-lg">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-stone-100">
+          <tr>
+            <th class="p-2">Date</th><th class="p-2">Staff name</th><th class="p-2">Order area</th>
+            <th class="p-2">Start time</th><th class="p-2">End time</th><th class="p-2">Total duration</th><th class="p-2"></th>
+          </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+
+    <div class="mt-5 border-t border-stone-200 pt-4">
+      <h3 class="font-semibold mb-2">Email the results</h3>
+      <div class="grid gap-2 sm:grid-cols-[2fr_auto_auto_auto]">
+        <input id="emailTo" type="email" placeholder="Recipient email" class="h-12 rounded-lg border border-slate-400 px-3" aria-label="Recipient email">
+        <button id="btnSend" class="h-12 px-5 rounded-lg bg-slate-900 text-white font-semibold">Email results</button>
+        <button id="btnCopy" class="h-12 px-5 rounded-lg border border-slate-400 font-medium">Copy table</button>
+        <button id="btnMailto" class="h-12 px-5 rounded-lg border border-slate-400 font-medium">Open in mail app</button>
+      </div>
+      <p id="emailMsg" class="text-sm mt-2 min-h-[1.25rem]" role="status"></p>
+      <p class="text-xs text-slate-500">Exports whatever the filters above currently show. Mail app fallback sends plain text; use Copy table for the formatted version.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+/* ------------------------------ Config & state ------------------------------ */
+const AREAS = {
+  Ambient:   { btn: 'bg-teal-600 active:bg-teal-800 text-white',        card: 'border-teal-600',  chip: 'bg-teal-600 text-white',  hex: '#0d9488' },
+  'Long Life': { btn: 'bg-amber-500 active:bg-amber-700 text-slate-900', card: 'border-amber-500', chip: 'bg-amber-500 text-slate-900', hex: '#f59e0b' },
+  Freezer:   { btn: 'bg-sky-300 active:bg-sky-500 text-slate-900',      card: 'border-sky-400',   chip: 'bg-sky-300 text-slate-900',   hex: '#7dd3fc' }
+};
+const KEYS = { staff: 'lrt.staff', logs: 'lrt.logs', timers: 'lrt.timers', email: 'lrt.email' };
+
+function load(key, fallback) {
+  try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; } catch { return fallback; }
+}
+function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.warn('Storage failed', e); } }
+
+let staff  = load(KEYS.staff, []);   // {id, name, role}
+let logs   = load(KEYS.logs, []);    // {id, date, staff, area, start, end, ms}
+let timers = load(KEYS.timers, []);  // {id, staffId, staffName, area, startedAt, acc, resumedAt|null}
+
+const $ = id => document.getElementById(id);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pad = n => String(n).padStart(2, '0');
+const localDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const timeStr = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const mmss = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+const elapsed = t => t.acc + (t.resumedAt ? Date.now() - t.resumedAt : 0);
+
+/* ------------------------------ Staff ------------------------------ */
+function renderStaff() {
+  $('staffList').innerHTML = staff.length ? staff.map(s => `
+    <li class="flex items-center justify-between py-2">
+      <span><span class="font-medium">${esc(s.name)}</span> <span class="text-slate-500">${esc(s.role)}</span></span>
+      <button data-del-staff="${s.id}" class="h-10 px-4 rounded-lg border border-red-300 text-red-700 text-sm">Delete</button>
+    </li>`).join('') : '<li class="py-2 text-slate-500">No staff yet. Add your first team member above.</li>';
+
+  const opts = staff.map(s => `<option value="${s.id}">${esc(s.name)} (${esc(s.role)})</option>`).join('');
+  const prev = $('startStaff').value;
+  $('startStaff').innerHTML = staff.length ? opts : '<option value="">Add staff first</option>';
+  if (staff.some(s => s.id === prev)) $('startStaff').value = prev;
+
+  const fPrev = $('fStaff').value;
+  const names = [...new Set([...staff.map(s => s.name), ...logs.map(l => l.staff)])];
+  $('fStaff').innerHTML = '<option value="">All staff</option>' + names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  if (names.includes(fPrev)) $('fStaff').value = fPrev;
+}
+
+$('staffForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const name = $('staffName').value.trim(), role = $('staffRole').value.trim();
+  if (!name || !role) return;
+  staff.push({ id: uid(), name, role });
+  save(KEYS.staff, staff);
+  e.target.reset(); renderStaff(); $('staffName').focus();
+});
+
+$('staffList').addEventListener('click', e => {
+  const id = e.target.dataset.delStaff; if (!id) return;
+  const s = staff.find(x => x.id === id);
+  const running = timers.some(t => t.staffId === id);
+  const warn = running ? ' They have a running timer, which will keep going.' : '';
+  if (confirm(`Delete ${s.name} from the roster? Past logs are kept.${warn}`)) {
+    staff = staff.filter(x => x.id !== id);
+    save(KEYS.staff, staff); renderStaff();
+  }
+});
+
+/* ------------------------------ Timers ------------------------------ */
+$('areaButtons').innerHTML = Object.entries(AREAS).map(([name, a]) =>
+  `<button data-area="${name}" class="h-24 rounded-xl text-lg font-bold ${a.btn}">${name}</button>`).join('');
+
+$('areaButtons').addEventListener('click', e => {
+  const area = e.target.dataset.area; if (!area) return;
+  const s = staff.find(x => x.id === $('startStaff').value);
+  if (!s) { $('startMsg').textContent = 'Choose a staff member before starting a timer.'; return; }
+  $('startMsg').textContent = '';
+  const now = Date.now();
+  timers.push({ id: uid(), staffId: s.id, staffName: s.name, area, startedAt: now, acc: 0, resumedAt: now });
+  save(KEYS.timers, timers); renderTimers();
+});
+
+function renderTimers() {
+  $('timers').innerHTML = timers.length ? timers.map(t => {
+    const a = AREAS[t.area], running = !!t.resumedAt;
+    return `
+    <div class="rounded-xl border-4 ${a.card} p-3 bg-white">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-semibold truncate">${esc(t.staffName)}</span>
+        <span class="text-sm px-2 py-0.5 rounded-full ${a.chip}">${t.area}</span>
+      </div>
+      <div data-clock="${t.id}" class="tnum text-5xl font-bold text-center my-3">${mmss(elapsed(t))}</div>
+      <div class="text-center text-xs text-slate-500 mb-2">${running ? 'Running' : 'Paused'} since start ${timeStr(new Date(t.startedAt).toISOString())}</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button data-toggle="${t.id}" class="h-14 rounded-lg font-semibold ${running ? 'bg-slate-200' : 'bg-slate-900 text-white'}">${running ? 'Pause' : 'Resume'}</button>
+        <button data-log="${t.id}" class="h-14 rounded-lg font-semibold bg-emerald-700 text-white">Log run</button>
+      </div>
+      <button data-discard="${t.id}" class="w-full h-10 mt-2 text-sm text-red-700">Discard timer</button>
+    </div>`;
+  }).join('') : '<p class="text-slate-500 sm:col-span-2 lg:col-span-3">No timers running. Pick a staff member and tap an area to start one.</p>';
+}
+
+$('timers').addEventListener('click', e => {
+  const d = e.target.dataset;
+  if (d.toggle) {
+    const t = timers.find(x => x.id === d.toggle);
+    if (t.resumedAt) { t.acc += Date.now() - t.resumedAt; t.resumedAt = null; } else { t.resumedAt = Date.now(); }
+  } else if (d.log) {
+    const t = timers.find(x => x.id === d.log), end = Date.now();
+    const ms = elapsed(t);
+    logs.unshift({ id: uid(), date: localDate(new Date(t.startedAt)), staff: t.staffName, area: t.area,
+                   start: new Date(t.startedAt).toISOString(), end: new Date(end).toISOString(), ms });
+    timers = timers.filter(x => x.id !== t.id);
+    save(KEYS.logs, logs); renderStaff(); renderLogs();
+  } else if (d.discard) {
+    if (!confirm('Discard this timer without logging it?')) return;
+    timers = timers.filter(x => x.id !== d.discard);
+  } else return;
+  save(KEYS.timers, timers); renderTimers();
+});
+
+// Tick every second: update clocks only (no full re-render, so buttons stay tappable)
+setInterval(() => {
+  $('clock').textContent = new Date().toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  timers.forEach(t => { const el = document.querySelector(`[data-clock="${t.id}"]`); if (el) el.textContent = mmss(elapsed(t)); });
+}, 1000);
+
+/* ------------------------------ Logs ------------------------------ */
+function filtered() {
+  const d = $('fDate').value, s = $('fStaff').value;
+  return logs.filter(l => (!d || l.date === d) && (!s || l.staff === s));
+}
+
+function renderLogs() {
+  const rows = filtered();
+  $('logBody').innerHTML = rows.length ? rows.map(l => `
+    <tr class="border-t border-stone-200">
+      <td class="p-2 whitespace-nowrap">${l.date}</td>
+      <td class="p-2">${esc(l.staff)}</td>
+      <td class="p-2"><span class="px-2 py-0.5 rounded-full text-xs ${AREAS[l.area].chip}">${l.area}</span></td>
+      <td class="p-2 tnum whitespace-nowrap">${timeStr(l.start)}</td>
+      <td class="p-2 tnum whitespace-nowrap">${timeStr(l.end)}</td>
+      <td class="p-2 tnum font-semibold">${mmss(l.ms)}</td>
+      <td class="p-2 text-right"><button data-del-log="${l.id}" class="h-10 px-3 rounded-lg border border-red-300 text-red-700">Delete</button></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="p-4 text-slate-500">No runs match these filters.</td></tr>';
+
+  const total = rows.reduce((n, l) => n + l.ms, 0);
+  $('summary').textContent = rows.length ? `${rows.length} run${rows.length > 1 ? 's' : ''}, average ${mmss(total / rows.length)}` : '';
+}
+
+$('logBody').addEventListener('click', e => {
+  const id = e.target.dataset.delLog; if (!id) return;
+  if (confirm('Delete this log entry?')) { logs = logs.filter(l => l.id !== id); save(KEYS.logs, logs); renderLogs(); }
+});
+$('fDate').addEventListener('input', renderLogs);
+$('fStaff').addEventListener('input', renderLogs);
+$('fClear').addEventListener('click', () => { $('fDate').value = ''; $('fStaff').value = ''; renderLogs(); });
+
+/* ------------------------------ Email / export ------------------------------ */
+$('emailTo').value = load(KEYS.email, '');
+$('emailTo').addEventListener('change', () => save(KEYS.email, $('emailTo').value.trim()));
+
+function say(msg, ok = true) { const el = $('emailMsg'); el.textContent = msg; el.className = 'text-sm mt-2 min-h-[1.25rem] ' + (ok ? 'text-emerald-700' : 'text-red-700'); }
+
+function buildHtmlTable(rows) {
+  const th = 'style="border:1px solid #ccc;padding:6px 10px;background:#f1f5f9;text-align:left"';
+  const td = 'style="border:1px solid #ccc;padding:6px 10px"';
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px"><thead><tr>` +
+    ['Date','Staff name','Order area','Start time','End time','Total duration (MM:SS)'].map(h => `<th ${th}>${h}</th>`).join('') +
+    `</tr></thead><tbody>` +
+    rows.map(l => `<tr><td ${td}>${l.date}</td><td ${td}>${esc(l.staff)}</td><td ${td}>${l.area}</td><td ${td}>${timeStr(l.start)}</td><td ${td}>${timeStr(l.end)}</td><td ${td}>${mmss(l.ms)}</td></tr>`).join('') +
+    `</tbody></table>`;
+}
+const buildText = rows => 'Date | Staff | Area | Start | End | Duration\n' +
+  rows.map(l => [l.date, l.staff, l.area, timeStr(l.start), timeStr(l.end), mmss(l.ms)].join(' | ')).join('\n');
+const subject = () => `Load run report ${$('fDate').value || localDate(new Date())}`;
+
+function emailReady() { return !Object.values(EMAILJS_CONFIG).some(v => v.startsWith('YOUR_')); }
+
+$('btnSend').addEventListener('click', async () => {
+  const rows = filtered(), to = $('emailTo').value.trim();
+  if (!rows.length) return say('There are no runs to send. Adjust the filters or log a run first.', false);
+  if (!to) return say('Enter a recipient email address.', false);
+  if (!emailReady()) return say('EmailJS is not configured yet. Add your keys at the top of the file, or use Copy table / Open in mail app.', false);
+  if (!window.emailjs) return say('The EmailJS library did not load. Check your connection.', false);
+  say('Sending...');
+  try {
+    await emailjs.send(EMAILJS_CONFIG.service_id, EMAILJS_CONFIG.template_id,
+      { to_email: to, subject: subject(), html_table: buildHtmlTable(rows) },
+      { publicKey: EMAILJS_CONFIG.public_key });
+    say('Email sent.');
+  } catch (err) { say('Email failed: ' + (err.text || err.message || 'unknown error'), false); }
+});
+
+$('btnCopy').addEventListener('click', async () => {
+  const rows = filtered();
+  if (!rows.length) return say('There are no runs to copy.', false);
+  const html = buildHtmlTable(rows);
+  try {
+    if (window.ClipboardItem) {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([buildText(rows)], { type: 'text/plain' }) })]);
+    } else { await navigator.clipboard.writeText(html); }
+    say('Table copied. Paste it into an email.');
+  } catch { say('Copy was blocked by the browser. Try again over HTTPS or localhost.', false); }
+});
+
+$('btnMailto').addEventListener('click', () => {
+  const rows = filtered();
+  if (!rows.length) return say('There are no runs to send.', false);
+  const body = encodeURIComponent(buildText(rows)).slice(0, 1800); // mailto links have length limits
+  location.href = `mailto:${encodeURIComponent($('emailTo').value.trim())}?subject=${encodeURIComponent(subject())}&body=${body}`;
+});
+
+/* ------------------------------ Init ------------------------------ */
+renderStaff(); renderTimers(); renderLogs();
+</script>
+</body>
+</html>
