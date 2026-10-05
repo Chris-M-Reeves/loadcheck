@@ -40,13 +40,13 @@ import { getFirestore, doc, collection, getDoc, setDoc, addDoc, updateDoc, delet
 
 /* ---------------------------- CONFIG ---------------------------- */
 const firebaseConfig = {
-  apiKey: "AIzaSyCjntFGi3pO77Qv7jxKDF4Ytz7La0FLLLo",
-  authDomain: "loadcheckaldi.firebaseapp.com",
-  projectId: "loadcheckaldi",
-  storageBucket: "loadcheckaldi.firebasestorage.app",
+  apiKey:            "AIzaSyCjntFGi3p077Qv7jxKDF4Ytz7La0FLLLo",
+  authDomain:        "loadcheckaldi.firebaseapp.com",
+  projectId:         "loadcheckaldi",
+  storageBucket:     "loadcheckaldi.firebasestorage.app",
   messagingSenderId: "1085146750070",
-  appId: "1:1085146750070:web:40446f2507363efe191357",
-  measurementId: "G-9ZSBFE5ZKG"
+  appId:             "1:1085146750070:web:40446f2507363efe191357",
+  measurementId:     "G-9ZSBFE5ZKG" // only used by Firebase Analytics, which this app doesn't load
 };
 const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
 const DEFAULT_PIN = "1234"; // used until a manager changes it on the Admin page
@@ -133,6 +133,7 @@ window.addEventListener("offline", () => setStatus(false));
 /* ---------------------------- NAV ---------------------------- */
 function showPage(p) {
   page = p;
+  if (p !== "home" && $("keepAwake").checked) setWake(false); // leaving Home turns keep-awake off
   ["home", "staff", "admin"].forEach(n => {
     $("page-" + n).classList.toggle("hidden", n !== p);
     $("tab-" + n).className = "h-12 px-5 rounded-lg font-semibold " + (n === p ? "bg-white text-slate-900" : "bg-slate-800");
@@ -302,6 +303,33 @@ $("btnEmail").addEventListener("click", async () => {
 
 function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
 
+/* ---------------------------- KEEP SCREEN ON ---------------------------- */
+// Uses the Screen Wake Lock API (needs HTTPS). The browser also releases it by itself when the
+// tablet is locked or you switch apps/tabs, so the tick is cleared in that case too.
+let wakeLock = null;
+async function setWake(on) {
+  const box = $("keepAwake"), msg = $("awakeMsg");
+  try {
+    if (on) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; box.checked = false; msg.textContent = ""; });
+      msg.textContent = "Screen will stay on while you are on Home.";
+    } else {
+      box.checked = false; msg.textContent = "";
+      if (wakeLock) await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch (err) {
+    box.checked = false; wakeLock = null;
+    msg.textContent = "Could not keep the screen on (" + (err.name || "error") + ").";
+  }
+}
+if (!("wakeLock" in navigator)) {
+  $("keepAwake").disabled = true;
+  $("awakeMsg").textContent = "Not available in this browser or needs HTTPS.";
+}
+$("keepAwake").addEventListener("change", e => setWake(e.target.checked));
+
 /* ---------------------------- BOOT ---------------------------- */
 (async () => {
   if (!configured) return showErr("Firebase is not configured. Paste your keys into firebaseConfig in this file.");
@@ -329,7 +357,7 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
 <div id="app" class="hidden">
   <header class="bg-slate-900 border-b border-slate-700 px-4 py-3">
     <div class="max-w-6xl mx-auto flex flex-wrap items-center gap-3">
-      <div class="mr-auto"><div class="text-xs text-slate-400">Store</div><div id="storeLabel" class="font-extrabold text-lg leading-none"></div><div class="text-[10px] text-slate-500">v4</div></div>
+      <div class="mr-auto"><div class="text-xs text-slate-400">Store</div><div id="storeLabel" class="font-extrabold text-lg leading-none"></div><div class="text-[10px] text-slate-500">v6</div></div>
       <nav class="flex gap-2">
         <button id="tab-home" data-act="tab" data-page="home">Home</button>
         <button id="tab-staff" data-act="tab" data-page="staff">Staff</button>
@@ -343,6 +371,12 @@ function renderAll() { renderHome(); renderStaff(); renderAdmin(); }
   <main class="max-w-6xl mx-auto p-4">
     <!-- HOME -->
     <section id="page-home" class="space-y-6">
+      <div class="flex flex-wrap items-center gap-3">
+        <label id="keepAwakeWrap" class="inline-flex items-center gap-3 h-14 px-4 rounded-xl bg-slate-900 border border-slate-700 text-lg font-semibold cursor-pointer">
+          <input id="keepAwake" type="checkbox" class="w-7 h-7 accent-emerald-500"> Keep screen on
+        </label>
+        <span id="awakeMsg" class="text-sm text-slate-400" role="status"></span>
+      </div>
       <div><h2 class="text-xl font-bold mb-2">1. Who is running?</h2><div id="staffPick" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
       <div><h2 class="text-xl font-bold mb-2">2. Which area?</h2><div id="areaPick" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div></div>
       <div id="startWrap" class="hidden"><button id="startBtn" class="w-full h-24 rounded-2xl bg-white text-slate-900 text-3xl font-extrabold">START TIMER</button></div>
