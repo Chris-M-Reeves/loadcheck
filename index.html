@@ -5,14 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TimerPal</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230f766e'/%3E%3Ccircle cx='32' cy='36' r='20' fill='white'/%3E%3Ccircle cx='25' cy='33' r='3'/%3E%3Ccircle cx='39' cy='33' r='3'/%3E%3Cpath d='M23 42Q32 50 41 42' stroke='black' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
-<!-- EmailJS SDK (used by "Email results" on the Admin page) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<!-- EmailJS SDK (used by "Email results" in Admin > Export) -->
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <style>
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   .tnum { font-variant-numeric: tabular-nums; }
   :focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  .inp { height: 3.5rem; width: 100%; border-radius: .5rem; background: #1e293b; border: 1px solid #475569; padding: 0 1rem; font-size: 1.125rem; color: #f1f5f9; }
+  .btn { height: 3.5rem; padding: 0 1.5rem; border-radius: .5rem; font-weight: 700; }
+  .btn-w { background: #fff; color: #0f172a; } .btn-o { border: 1px solid #475569; } .btn-d { border: 1px solid #ef4444; color: #f87171; border-radius: .5rem; height: 3rem; padding: 0 1rem; }
+  .lbl { display: block; font-size: .875rem; margin-bottom: .25rem; color: #cbd5e1; }
   .pick { border: 4px solid #334155; background: #0f172a; transition: box-shadow .15s, border-color .15s; }
   .pick.sel { border-color: #fff; box-shadow: 0 0 0 4px var(--c), 0 0 36px 6px var(--c); }
   .area { border: 4px solid var(--c); background: color-mix(in srgb, var(--c) 18%, #0f172a); }
@@ -22,8 +26,7 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen">
 <!-- TimerPal logo: a friendly stopwatch -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="tp-logo" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="16" fill="#0f766e"/>
-  <rect x="27" y="6" width="10" height="7" rx="2" fill="#fff"/>
+  <rect width="64" height="64" rx="16" fill="#0f766e"/><rect x="27" y="6" width="10" height="7" rx="2" fill="#fff"/>
   <circle cx="32" cy="37" r="21" fill="#fff"/>
   <circle cx="32" cy="37" r="17.5" fill="none" stroke="#f59e0b" stroke-width="4" stroke-linecap="round" stroke-dasharray="80 200" transform="rotate(-90 32 37)"/>
   <circle cx="26" cy="34" r="2.6" fill="#0f172a"/><circle cx="38" cy="34" r="2.6" fill="#0f172a"/>
@@ -32,16 +35,11 @@
 
 <!--
 =====================================================================
- SETUP 1: FIREBASE
- 1. console.firebase.google.com -> Add project.
- 2. Build -> Firestore Database -> Create database.
- 3. Project settings -> Your apps -> Web (</>) -> copy the config values.
- 4. Paste them into firebaseConfig below.
- 5. Firestore -> Rules: see the note at the bottom of this file.
-
- SETUP 2: EMAILJS (optional, for the Admin "Email results" button)
- Service ID, Template ID and Public Key come from emailjs.com.
- Template variables: {{to_email}}, {{subject}}, {{{html_table}}}
+ SETUP 1: FIREBASE  - paste your project's web config into firebaseConfig below.
+ SETUP 2: EMAILJS (optional) - keys from emailjs.com. Template variables:
+          {{to_email}}, {{subject}}, {{{html_table}}}
+ Note: data is stored under the internal names "stores/<account>/..." so
+ earlier versions' data keeps working. Do not rename them.
 =====================================================================
 -->
 <script type="module">
@@ -57,46 +55,48 @@ const firebaseConfig = {
   storageBucket:     "loadcheckaldi.firebasestorage.app",
   messagingSenderId: "1085146750070",
   appId:             "1:1085146750070:web:40446f2507363efe191357",
-  measurementId:     "G-9ZSBFE5ZKG" // only used by Firebase Analytics, which this app doesn't load
+  measurementId:     "G-9ZSBFE5ZKG"
 };
 const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
-const DEFAULT_PIN = "1234"; // used until a manager changes it on the Admin page
+const DEFAULT_PIN = "1234"; // used until changed in Admin > Security
+const VERSION = "Beta 0.08";
 /* ---------------------------------------------------------------- */
 
-let areas = []; // {id, name, color, threshold(minutes, 0 = none)} - you create these on the Customization page
-const areaOf = n => areas.find(a => a.name === n);
-const colorOf = n => areaOf(n)?.color || "#94a3b8";
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, "0");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const mmss = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+const fmtDT = ms => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "medium" });
+const ymd = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const elapsed = t => (t.acc || 0) + (t.resumedAt ? Date.now() - t.resumedAt : 0);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-// "John Smith" or "John S." -> "John S."
-function shortName(str) {
+function shortName(str) { // "John Smith" or "John S." -> "John S."
   const p = String(str).trim().split(/\s+/);
   return p.length < 2 ? p[0] : `${p[0]} ${p[p.length - 1][0].toUpperCase()}.`;
 }
-// Mood face: t = 0 happy ... 1 crying. Happy until the area's threshold, crying 10 minutes after it.
+const full = s => shortName(s.first + " " + s.last);
+
+let db, storeId = null, storeData = {}, people = [], timers = [], logs = [], cats = [], pages = [], entries = [];
+let selPerson = null, selCat = null, entPerson = null, unsubs = [];
+let page = "home", dataId = null, custSub = "people", admSub = "logs", source = "timers", gMode = "run", adminOK = false;
+const configured = !firebaseConfig.apiKey.startsWith("YOUR_");
+if (configured) db = getFirestore(initializeApp(firebaseConfig));
+const col = name => collection(db, "stores", storeId, name);
+const ref = (name, id) => doc(db, "stores", storeId, name, id);
+const areaOf = n => cats.find(a => a.name === n);
+const colorOf = n => areaOf(n)?.color || "#94a3b8";
+
+// Mood face: t = 0 happy ... 1 crying. Happy until the category's threshold, crying 10 minutes after it.
 function faceSVG(t, size) {
   const fill = `hsl(${Math.round(55 * (1 - t))} 90% 55%)`;
   const tear = t > 0.6 ? 3 + 9 * (t - 0.6) / 0.4 : 0;
   const tears = tear ? `<ellipse cx="23" cy="${32 + tear / 2}" rx="2.6" ry="${tear}" fill="#38bdf8"/><ellipse cx="41" cy="${32 + tear / 2}" rx="2.6" ry="${tear}" fill="#38bdf8"/>` : "";
   return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" role="img" aria-label="Mood"><circle cx="32" cy="32" r="29" fill="${fill}" stroke="#0f172a" stroke-width="2"/>${tears}<circle cx="23" cy="26" r="3.2" fill="#0f172a"/><circle cx="41" cy="26" r="3.2" fill="#0f172a"/><path d="M19 45Q32 ${(57 - 26 * t).toFixed(1)} 45 45" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/></svg>`;
 }
-function faceFor(areaName, ms, size) {
-  const th = areaOf(areaName)?.threshold;
+function faceFor(catName, ms, size) {
+  const th = areaOf(catName)?.threshold;
   return th > 0 ? faceSVG(clamp((ms / 60000 - th) / 10, 0, 1), size) : "";
 }
-const $ = id => document.getElementById(id);
-const pad = n => String(n).padStart(2, "0");
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const mmss = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
-const fmtDT = ms => new Date(ms).toLocaleString([], { dateStyle: "short", timeStyle: "medium" });
-const ymd = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
-const elapsed = t => (t.acc || 0) + (t.resumedAt ? Date.now() - t.resumedAt : 0);
-const full = s => shortName(s.first + " " + s.last);
-
-let db, storeId = null, storeData = {}, staff = [], timers = [], logs = [];
-let selStaff = null, selArea = null, unsubs = [], page = "home";
-const configured = !firebaseConfig.apiKey.startsWith("YOUR_");
-if (configured) db = getFirestore(initializeApp(firebaseConfig));
-const col = name => collection(db, "stores", storeId, name);
 
 async function hash(text) {
   if (crypto.subtle) { // needs HTTPS or localhost
@@ -107,17 +107,14 @@ async function hash(text) {
 }
 
 /* ---------------------------- LOGIN ---------------------------- */
-async function login(id, pw, fromSession) {
-  const ref = doc(db, "stores", id), snap = await getDoc(ref);
-  const h = fromSession ? pw : await hash(id + ":" + pw);
-  if (!snap.exists()) {
-    if (fromSession) throw new Error("Store not found");
-    await setDoc(ref, { pwHash: h, pin: DEFAULT_PIN, created: Date.now() }); // first login creates the store
-  } else if (snap.data().pwHash !== h) throw new Error("Wrong account or password");
+async function login(id, pw) {
+  const r = doc(db, "stores", id), snap = await getDoc(r), h = await hash(id + ":" + pw);
+  if (!snap.exists()) await setDoc(r, { pwHash: h, pin: DEFAULT_PIN, created: Date.now() }); // first sign-in creates the account
+  else if (snap.data().pwHash !== h) throw new Error("Wrong account or password");
   sessionStorage.setItem("lrt.session", JSON.stringify({ id, h }));
   storeId = id; startSync();
 }
-
+function showErr(m) { $("loginErr").textContent = m; }
 $("loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   const id = $("storeId").value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -126,12 +123,7 @@ $("loginForm").addEventListener("submit", async e => {
   try { await login(id, $("storePw").value); } catch (err) { showErr(err.message || "Could not sign in. Check your connection."); }
   $("loginBtn").disabled = false;
 });
-function showErr(m) { $("loginErr").textContent = m; }
-
-$("logout").addEventListener("click", () => {
-  unsubs.forEach(u => u()); unsubs = [];
-  sessionStorage.clear(); location.reload();
-});
+$("logout").addEventListener("click", () => { unsubs.forEach(u => u()); sessionStorage.clear(); location.reload(); });
 
 /* ---------------------------- LIVE SYNC ---------------------------- */
 function startSync() {
@@ -143,17 +135,18 @@ function startSync() {
   }, err => { setStatus(false); console.error(err); }));
   unsubs.push(onSnapshot(doc(db, "stores", storeId), s => {
     storeData = s.data() || {};
-    // If another tablet changed the store password, sign this one out so it must use the new password
-    const ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null");
+    const ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null"); // password changed on another device -> sign out
     if (ses && storeData.pwHash && ses.h !== storeData.pwHash && !s.metadata.fromCache && !s.metadata.hasPendingWrites) {
       sessionStorage.removeItem("lrt.session"); alert("The account password was changed. Please sign in again."); location.reload();
     }
   }));
-  sync(query(col("staff"), orderBy("first")), v => staff = v);
-  sync(query(col("areas"), orderBy("name")), v => areas = v);
+  sync(query(col("staff"), orderBy("first")), v => people = v);
+  sync(query(col("areas"), orderBy("name")), v => cats = v);
+  sync(query(col("pages"), orderBy("name")), v => pages = v);
   sync(col("timers"), v => timers = v);
   sync(query(col("logs"), orderBy("endMs", "desc")), v => logs = v.map(l => ({ ...l, staffName: shortName(l.staffName) })));
-  showPage(page);
+  sync(query(col("entries"), orderBy("endMs", "desc")), v => entries = v);
+  showPage("home");
 }
 function setStatus(live) {
   $("dot").className = "inline-block w-3 h-3 rounded-full " + (live ? "bg-emerald-400" : "bg-red-500");
@@ -161,128 +154,166 @@ function setStatus(live) {
 }
 window.addEventListener("offline", () => setStatus(false));
 
-/* ---------------------------- NAV ---------------------------- */
+/* ---------------------------- NAV & SUBTABS ---------------------------- */
+function lockAdmin() { adminOK = false; }
 function showPage(p) {
-  page = p;
-  if (p !== "home" && $("keepAwake").checked) setWake(false); // leaving Home turns keep-awake off
-  ["home", "staff", "admin"].forEach(n => {
-    $("page-" + n).classList.toggle("hidden", n !== p);
-    $("tab-" + n).className = "h-12 px-5 rounded-lg font-semibold " + (n === p ? "bg-white text-slate-900" : "bg-slate-800");
-  });
+  if (p !== "admin" && adminOK) lockAdmin();                        // Admin locks when you leave it
+  if (p !== "home" && $("keepAwake").checked) setWake(false);       // keep-awake only applies on Home
+  if (p.startsWith("p:")) { page = "data"; dataId = p.slice(2); entPerson = null; } else page = p;
+  ["home", "data", "custom", "admin"].forEach(n => $("page-" + n).classList.toggle("hidden", n !== page));
   renderAll();
 }
+document.addEventListener("visibilitychange", () => { if (document.hidden && adminOK) { lockAdmin(); renderAdmin(); } });
+
+function renderNav() {
+  const tabs = [["home", "Home"], ...pages.map(p => ["p:" + p.id, p.name]), ["custom", "Customization"], ["admin", "Admin"]];
+  const cur = page === "data" ? "p:" + dataId : page;
+  $("nav").innerHTML = tabs.map(([k, l]) => `<button data-act="tab" data-page="${esc(k)}" class="h-12 px-5 rounded-lg font-semibold ${k === cur ? "bg-white text-slate-900" : "bg-slate-800"}">${esc(l)}</button>`).join("");
+}
+function applySubs() {
+  [["cust", custSub, ["people", "cats", "pages"], "cp-"], ["adm", admSub, ["logs", "graphs", "export", "security"], "ap-"]].forEach(([g, cur, names, pre]) => names.forEach(n => {
+    $(pre + n).classList.toggle("hidden", n !== cur);
+    $(`sb-${g}-${n}`).className = "h-11 px-4 rounded-lg font-semibold " + (n === cur ? "bg-slate-200 text-slate-900" : "bg-slate-800");
+  }));
+  $("filterBar").classList.toggle("hidden", admSub === "security");
+}
+
+/* ---------------------------- CLICK ACTIONS ---------------------------- */
 document.addEventListener("click", async e => {
   const t = e.target.closest("[data-act]"); if (!t) return;
-  const { act, id } = t.dataset;
-  const tm = timers.find(x => x.id === id);
+  const { act, id } = t.dataset, tm = timers.find(x => x.id === id);
   if (act === "tab") showPage(t.dataset.page);
-  else if (act === "pickStaff") { selStaff = selStaff === id ? null : id; renderHome(); }
-  else if (act === "pickArea") { selArea = selArea === id ? null : id; renderHome(); }
+  else if (act === "sub") {
+    if (t.dataset.group === "cust") custSub = t.dataset.name; else admSub = t.dataset.name;
+    applySubs(); if (t.dataset.group === "adm" && admSub === "graphs") renderInsights();
+  }
+  else if (act === "mode") { gMode = t.dataset.mode; renderInsights(); }
+  else if (act === "pickPerson") { selPerson = selPerson === id ? null : id; renderHome(); }
+  else if (act === "pickCat") { selCat = selCat === id ? null : id; renderHome(); }
+  else if (act === "pickEnt") { entPerson = entPerson === id ? null : id; renderData(); }
   else if (act === "start") {
-    const s = staff.find(x => x.id === selStaff);
-    await addDoc(col("timers"), { staffId: s.id, staffName: full(s), area: selArea, startedAt: Date.now(), acc: 0, resumedAt: Date.now() });
-    selStaff = selArea = null;
+    const s = people.find(x => x.id === selPerson);
+    if (!s || !selCat || timers.some(x => x.staffId === s.id)) return; // one timer per person
+    const now = Date.now();
+    await setDoc(ref("timers", s.id), { staffId: s.id, staffName: full(s), area: selCat, startedAt: now, acc: 0, resumedAt: now }); // doc id = person id
+    selPerson = selCat = null;
   }
-  else if (act === "toggle") {
-    await updateDoc(doc(db, "stores", storeId, "timers", id), tm.resumedAt ? { acc: elapsed(tm), resumedAt: null } : { resumedAt: Date.now() });
-  }
+  else if (act === "toggle") await updateDoc(ref("timers", id), tm.resumedAt ? { acc: elapsed(tm), resumedAt: null } : { resumedAt: Date.now() });
   else if (act === "complete") {
-    const ms = elapsed(tm);
-    await addDoc(col("logs"), { staffName: tm.staffName, area: tm.area, startMs: tm.startedAt, endMs: Date.now(), ms });
-    await deleteDoc(doc(db, "stores", storeId, "timers", id));
+    await addDoc(col("logs"), { staffName: tm.staffName, area: tm.area, startMs: tm.startedAt, endMs: Date.now(), ms: elapsed(tm) });
+    await deleteDoc(ref("timers", id));
   }
-  else if (act === "discard") { if (confirm("Discard this timer without saving?")) await deleteDoc(doc(db, "stores", storeId, "timers", id)); }
-  else if (act === "delStaff") { const s = staff.find(x => x.id === id); if (confirm(`Delete ${full(s)}? Past logs are kept.`)) await deleteDoc(doc(db, "stores", storeId, "staff", id)); }
-  else if (act === "delLog") { if (confirm("Delete this log entry?")) await deleteDoc(doc(db, "stores", storeId, "logs", id)); }
-  else if (act === "delArea") { const a = areas.find(x => x.id === id); if (confirm(`Delete the area "${a.name}"? Past logs keep its name.`)) await deleteDoc(doc(db, "stores", storeId, "areas", id)); }
+  else if (act === "discard") { if (confirm("Discard this timer without saving?")) await deleteDoc(ref("timers", id)); }
+  else if (act === "delPerson") { const s = people.find(x => x.id === id); if (confirm(`Delete ${full(s)}? Past records are kept.`)) await deleteDoc(ref("staff", id)); }
+  else if (act === "delCat") { const a = cats.find(x => x.id === id); if (confirm(`Delete the category "${a.name}"? Past records keep its name.`)) await deleteDoc(ref("areas", id)); }
+  else if (act === "delPage") { const p = pages.find(x => x.id === id); if (confirm(`Delete the page "${p.name}"? Its saved entries will no longer be viewable.`)) await deleteDoc(ref("pages", id)); }
+  else if (act === "delLog") { if (confirm("Delete this record?")) await deleteDoc(ref(t.dataset.coll, id)); }
+  else if (act === "preset") {
+    if (!pages.some(p => p.name.toLowerCase() === t.dataset.name.toLowerCase())) await addDoc(col("pages"), { name: t.dataset.name, unit: t.dataset.unit });
+  }
 });
 
 /* ---------------------------- HOME ---------------------------- */
 function renderHome() {
-  if (selArea && !areas.some(a => a.name === selArea)) selArea = null;
-  if (selStaff && !staff.some(s => s.id === selStaff)) selStaff = null;
-  $("staffPick").innerHTML = staff.length ? staff.map(s =>
-    `<button data-act="pickStaff" data-id="${s.id}" style="--c:#fff" class="pick ${s.id === selStaff ? "sel" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}</button>`).join("")
-    : '<p class="text-slate-400 col-span-full">No staff yet. Add people on the Staff tab.</p>';
-  $("areaPick").innerHTML = areas.length ? areas.map(a =>
-    `<button data-act="pickArea" data-id="${esc(a.name)}" style="--c:${esc(a.color)}" class="area ${a.name === selArea ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${esc(a.name)}${a.threshold ? `<div class="text-sm font-medium opacity-80">${a.threshold} min</div>` : ""}</button>`).join("")
-    : '<p class="text-slate-400 col-span-full">No areas yet. Add some on the Customization tab.</p>';
-  $("startWrap").classList.toggle("hidden", !(selStaff && selArea));
-  renderTimers();
-}
-function renderTimers() {
+  const busy = new Set(timers.map(t => t.staffId));
+  if (selPerson && (busy.has(selPerson) || !people.some(s => s.id === selPerson))) selPerson = null;
+  if (selCat && !cats.some(a => a.name === selCat)) selCat = null;
+  $("personPick").innerHTML = people.length ? people.map(s => { const b = busy.has(s.id);
+    return `<button data-act="pickPerson" data-id="${s.id}" ${b ? "disabled" : ""} style="--c:#fff" class="pick ${s.id === selPerson ? "sel" : ""} ${b ? "opacity-40" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}${b ? '<div class="text-xs font-medium">Timer running</div>' : ""}</button>`; }).join("")
+    : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
+  $("catPick").innerHTML = cats.length ? cats.map(a =>
+    `<button data-act="pickCat" data-id="${esc(a.name)}" style="--c:${esc(a.color)}" class="area ${a.name === selCat ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${esc(a.name)}${a.threshold ? `<div class="text-sm font-medium opacity-80">${a.threshold} min</div>` : ""}</button>`).join("")
+    : '<p class="text-slate-400 col-span-full">No categories yet. Add some in Customization.</p>';
+  $("startWrap").classList.toggle("hidden", !(selPerson && selCat));
   $("timerList").innerHTML = timers.length ? timers.map(t => {
     const c = colorOf(t.area), run = !!t.resumedAt;
     return `<div class="rounded-xl p-4 bg-slate-900" style="border:4px solid ${c}">
-      <div class="flex justify-between gap-2"><b class="truncate">${esc(t.staffName)}</b><span class="font-semibold" style="color:${c}">${esc(t.area)}</span></div>
+      <div class="flex justify-between gap-2"><b class="truncate">${esc(shortName(t.staffName))}</b><span class="font-semibold" style="color:${c}">${esc(t.area)}</span></div>
       <div data-face="${t.id}" class="flex justify-center mt-2">${faceFor(t.area, elapsed(t), 64)}</div>
       <div data-clock="${t.id}" class="tnum text-6xl font-extrabold text-center my-2">${mmss(elapsed(t))}</div>
       <div class="text-center text-sm text-slate-400 mb-3">${run ? "Running" : "Paused"}</div>
       <div class="grid grid-cols-2 gap-2">
-        <button data-act="toggle" data-id="${t.id}" class="h-16 rounded-lg text-lg font-bold ${run ? "bg-slate-700" : "bg-white text-slate-900"}">${run ? "Pause" : "Resume"}</button>
-        <button data-act="complete" data-id="${t.id}" class="h-16 rounded-lg text-lg font-bold bg-emerald-600">Complete</button>
+        <button data-act="toggle" data-id="${t.id}" class="btn ${run ? "bg-slate-700" : "btn-w"}">${run ? "Pause" : "Resume"}</button>
+        <button data-act="complete" data-id="${t.id}" class="btn bg-emerald-600">Complete</button>
       </div>
       <button data-act="discard" data-id="${t.id}" class="w-full h-10 mt-2 text-sm text-red-400">Discard</button></div>`;
   }).join("") : '<p class="text-slate-400 col-span-full">No timers running.</p>';
 }
-$("startBtn").dataset.act = "start";
 setInterval(() => timers.forEach(t => {
   const el = document.querySelector(`[data-clock="${t.id}"]`); if (el) el.textContent = mmss(elapsed(t));
   const f = document.querySelector(`[data-face="${t.id}"]`); if (f) f.innerHTML = faceFor(t.area, elapsed(t), 64);
 }), 500);
 
-/* ---------------------------- AREAS ---------------------------- */
-$("areaForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const name = $("areaName").value.trim(); if (!name) return;
-  if (areas.some(a => a.name.toLowerCase() === name.toLowerCase())) return alert("That area already exists.");
-  const th = parseFloat($("areaTh").value);
-  await addDoc(col("areas"), { name, color: $("areaColor").value, threshold: th > 0 ? th : 0 });
-  e.target.reset(); $("areaName").focus();
-});
-$("areaRows").addEventListener("change", async e => {
-  const { aid, f } = e.target.dataset; if (!aid) return;
-  await updateDoc(doc(db, "stores", storeId, "areas", aid), f === "color" ? { color: e.target.value } : { threshold: Math.max(0, parseFloat(e.target.value) || 0) });
-});
-function renderAreas() {
-  if ($("areaRows").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return; // don't wipe a field being edited
-  $("areaRows").innerHTML = areas.length ? areas.map(a => `<li class="flex flex-wrap items-center gap-3 py-3">
-    <input type="color" value="${esc(a.color)}" data-aid="${a.id}" data-f="color" aria-label="Colour for ${esc(a.name)}" class="w-14 h-12 rounded bg-transparent">
-    <span class="text-lg font-semibold grow">${esc(a.name)}</span>
-    <label class="text-sm text-slate-400">Threshold (min) <input type="number" min="0" step="1" value="${a.threshold || ""}" placeholder="none" data-aid="${a.id}" data-f="threshold" class="w-24 h-12 rounded-lg bg-slate-800 border border-slate-600 px-2 ml-1 text-slate-100"></label>
-    <button data-act="delArea" data-id="${a.id}" class="h-12 px-4 rounded-lg border border-red-500 text-red-400">Delete</button></li>`).join("")
-    : '<li class="py-3 text-slate-400">No areas yet. Add your first one above.</li>';
+/* ---------------------------- DATA PAGES (custom) ---------------------------- */
+function entMsg(m, ok = true) { $("entMsg").textContent = m; $("entMsg").className = "text-sm " + (ok ? "text-emerald-400" : "text-red-400"); }
+function renderData() {
+  if (page !== "data") return;
+  const pg = pages.find(p => p.id === dataId);
+  if (!pg) return showPage("home");
+  if (entPerson && !people.some(s => s.id === entPerson)) entPerson = null;
+  $("dataTitle").textContent = pg.name; $("entUnit").textContent = pg.unit || "value";
+  $("entPick").innerHTML = people.length ? people.map(s => `<button data-act="pickEnt" data-id="${s.id}" style="--c:#fff" class="pick ${s.id === entPerson ? "sel" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}</button>`).join("")
+    : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
+  const rec = entries.filter(e => e.pageId === pg.id).slice(0, 6);
+  $("entRecent").innerHTML = rec.length ? rec.map(e => `<li class="py-2 flex justify-between gap-2"><span>${esc(shortName(e.staffName))} <span class="text-slate-400">${esc(e.note || "")}</span></span><span class="tnum font-semibold">${+e.value} ${esc(e.unit || "")} <span class="text-slate-500 text-sm">${fmtDT(e.endMs)}</span></span></li>`).join("") : '<li class="py-2 text-slate-400">Nothing saved yet.</li>';
 }
+$("entSave").addEventListener("click", async () => {
+  const pg = pages.find(p => p.id === dataId), s = people.find(x => x.id === entPerson), v = parseFloat($("entVal").value);
+  if (!s) return entMsg("Pick a person first.", false);
+  if (!Number.isFinite(v)) return entMsg("Enter a number.", false);
+  await addDoc(col("entries"), { pageId: pg.id, pageName: pg.name, unit: pg.unit || "", staffName: full(s), value: v, note: $("entNote").value.trim(), endMs: Date.now() });
+  $("entVal").value = ""; $("entNote").value = ""; entPerson = null; renderData(); entMsg("Saved.");
+});
 
-/* ---------------------------- STAFF ---------------------------- */
+/* ---------------------------- CUSTOMIZATION ---------------------------- */
 $("staffForm").addEventListener("submit", async e => {
   e.preventDefault();
   const first = $("firstName").value.trim(), last = $("lastName").value.trim().slice(0, 1).toUpperCase();
   if (!first || !last) return;
-  await addDoc(col("staff"), { first, last });
-  e.target.reset(); $("firstName").focus();
+  await addDoc(col("staff"), { first, last }); e.target.reset(); $("firstName").focus();
 });
-function renderStaff() {
-  $("staffRows").innerHTML = staff.length ? staff.map(s =>
-    `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span>
-     <button data-act="delStaff" data-id="${s.id}" class="h-12 px-5 rounded-lg border border-red-500 text-red-400">Delete user</button></li>`).join("")
-    : '<li class="py-3 text-slate-400">No staff yet.</li>';
+$("catForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const name = $("catName").value.trim(); if (!name) return;
+  if (cats.some(a => a.name.toLowerCase() === name.toLowerCase())) return alert("That category already exists.");
+  const th = parseFloat($("catTh").value);
+  await addDoc(col("areas"), { name, color: $("catColor").value, threshold: th > 0 ? th : 0 }); e.target.reset(); $("catName").focus();
+});
+$("pageForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const name = $("pageName").value.trim(); if (!name) return;
+  if (pages.some(p => p.name.toLowerCase() === name.toLowerCase())) return alert("That page already exists.");
+  await addDoc(col("pages"), { name, unit: $("pageUnit").value.trim() }); e.target.reset(); $("pageName").focus();
+});
+$("catRows").addEventListener("change", async e => {
+  const { aid, f } = e.target.dataset; if (!aid) return;
+  await updateDoc(ref("areas", aid), f === "color" ? { color: e.target.value } : { threshold: Math.max(0, parseFloat(e.target.value) || 0) });
+});
+function renderCustom() {
+  $("personRows").innerHTML = people.length ? people.map(s => `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span><button data-act="delPerson" data-id="${s.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No people yet.</li>';
+  $("pageRows").innerHTML = pages.length ? pages.map(p => `<li class="flex items-center justify-between py-3"><span class="text-lg"><b>${esc(p.name)}</b> <span class="text-slate-400">measured in ${esc(p.unit || "numbers")}</span></span><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No extra pages yet.</li>';
+  if ($("catRows").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return; // don't wipe a field being edited
+  $("catRows").innerHTML = cats.length ? cats.map(a => `<li class="flex flex-wrap items-center gap-3 py-3">
+    <input type="color" value="${esc(a.color)}" data-aid="${a.id}" data-f="color" aria-label="Colour for ${esc(a.name)}" class="w-14 h-12 rounded bg-transparent">
+    <span class="text-lg font-semibold grow">${esc(a.name)}</span>
+    <label class="text-sm text-slate-400">Threshold (min) <input type="number" min="0" step="1" value="${a.threshold || ""}" placeholder="none" data-aid="${a.id}" data-f="threshold" class="w-24 h-12 rounded-lg bg-slate-800 border border-slate-600 px-2 ml-1 text-slate-100"></label>
+    <button data-act="delCat" data-id="${a.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No categories yet. Add your first one above.</li>';
 }
 
 /* ---------------------------- ADMIN ---------------------------- */
-let adminOK = sessionStorage.getItem("lrt.admin") === "1";
 $("pinGate").addEventListener("submit", e => {
   e.preventDefault();
-  if ($("pinIn").value.trim() === String(storeData.pin ?? DEFAULT_PIN)) { adminOK = true; sessionStorage.setItem("lrt.admin", "1"); $("pinErr").textContent = ""; renderAdmin(); }
+  if ($("pinIn").value.trim() === String(storeData.pin ?? DEFAULT_PIN)) { adminOK = true; $("pinErr").textContent = ""; renderAdmin(); }
   else $("pinErr").textContent = "Incorrect PIN.";
   $("pinIn").value = "";
 });
+$("lockBtn").addEventListener("click", () => { lockAdmin(); renderAdmin(); });
 $("pinChange").addEventListener("submit", async e => {
   e.preventDefault();
   const p = $("newPin").value;
   if (!/^\d{4}$/.test(p)) return $("pinMsg").textContent = "PIN must be exactly 4 digits.";
   await updateDoc(doc(db, "stores", storeId), { pin: p });
-  $("newPin").value = ""; $("pinMsg").textContent = "PIN changed on all tablets.";
+  $("newPin").value = ""; $("pinMsg").textContent = "PIN changed on all devices.";
 });
 $("pwChange").addEventListener("submit", async e => {
   e.preventDefault();
@@ -292,91 +323,110 @@ $("pwChange").addEventListener("submit", async e => {
   if (n.length < 4) return msg("New password must be at least 4 characters.");
   if (n !== $("newPw2").value) return msg("The new passwords don't match.");
   const h = await hash(storeId + ":" + n), old = sessionStorage.getItem("lrt.session");
-  // Update this tablet's session first so it isn't signed out by its own change
-  sessionStorage.setItem("lrt.session", JSON.stringify({ ...JSON.parse(old), h }));
-  try {
-    await updateDoc(doc(db, "stores", storeId), { pwHash: h });
-    e.target.reset(); msg("Password changed. Other tablets will ask for the new password.", true);
-  } catch { sessionStorage.setItem("lrt.session", old); msg("Could not save. Check your connection and try again."); }
+  sessionStorage.setItem("lrt.session", JSON.stringify({ ...JSON.parse(old), h })); // so this device isn't signed out by its own change
+  try { await updateDoc(doc(db, "stores", storeId), { pwHash: h }); e.target.reset(); msg("Password changed. Other devices will ask for the new password.", true); }
+  catch { sessionStorage.setItem("lrt.session", old); msg("Could not save. Check your connection and try again."); }
 });
-$("lockBtn").addEventListener("click", () => { adminOK = false; sessionStorage.removeItem("lrt.admin"); renderAdmin(); });
-["fFrom", "fTo", "fStaff", "fArea"].forEach(i => $(i).addEventListener("input", renderLogs));
-$("fClear").addEventListener("click", () => { $("fFrom").value = $("fTo").value = $("fStaff").value = $("fArea").value = ""; renderLogs(); });
 
+const isT = () => source === "timers";
+const unitOf = () => isT() ? "min" : (pages.find(p => p.id === source)?.unit || "");
+function records() { // one common shape for timer runs and custom-page entries
+  return isT() ? logs.map(l => ({ id: l.id, coll: "logs", who: l.staffName, cat: l.area, ms: l.ms, val: l.ms / 60000, t: l.endMs }))
+    : entries.filter(e => e.pageId === source).map(e => ({ id: e.id, coll: "entries", who: shortName(e.staffName), cat: e.note || "", val: +e.value, t: e.endMs }));
+}
+const fv = r => isT() ? mmss(r.ms) : `${+r.val.toFixed(2)} ${unitOf()}`;
+const fa = v => isT() ? mmss(v * 60000) : `${+v.toFixed(2)} ${unitOf()}`;
+const avg = a => a.length ? a.reduce((n, r) => n + r.val, 0) / a.length : 0;
+function filtered() {
+  const f = $("fFrom").value, t = $("fTo").value, p = $("fPerson").value, c = isT() ? $("fCat").value : "";
+  return records().filter(r => (!f || ymd(r.t) >= f) && (!t || ymd(r.t) <= t) && (!p || r.who === p) && (!c || r.cat === c));
+}
 function renderAdmin() {
   $("pinGate").classList.toggle("hidden", adminOK);
   $("adminBody").classList.toggle("hidden", !adminOK);
-  if (adminOK) renderLogs();
+  if (!adminOK) return;
+  if (!isT() && !pages.some(p => p.id === source)) source = "timers";
+  $("srcSel").innerHTML = '<option value="timers">Timers</option>' + pages.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  $("srcSel").value = source;
+  applySubs(); refreshAdmin();
 }
-function filtered() {
-  const f = $("fFrom").value, t = $("fTo").value, s = $("fStaff").value, a = $("fArea").value;
-  return logs.filter(l => (!f || ymd(l.endMs) >= f) && (!t || ymd(l.endMs) <= t) && (!s || l.staffName === s) && (!a || l.area === a));
-}
-function renderLogs() {
-  renderInsights();
-  const aKeep = $("fArea").value, aNames = [...new Set([...areas.map(a => a.name), ...logs.map(l => l.area)])].sort();
-  $("fArea").innerHTML = '<option value="">All areas</option>' + aNames.map(n => `<option>${esc(n)}</option>`).join("");
-  if (aNames.includes(aKeep)) $("fArea").value = aKeep;
-  const keep = $("fStaff").value, names = [...new Set(logs.map(l => l.staffName))].sort();
-  $("fStaff").innerHTML = '<option value="">All staff</option>' + names.map(n => `<option>${esc(n)}</option>`).join("");
-  if (names.includes(keep)) $("fStaff").value = keep;
-  const rows = filtered();
-  $("logRows").innerHTML = rows.length ? rows.map(l => `<tr class="border-t border-slate-800">
-    <td class="p-3 whitespace-nowrap">${fmtDT(l.endMs)}</td><td class="p-3">${esc(l.staffName)}</td>
-    <td class="p-3 font-semibold" style="color:${colorOf(l.area)}">${esc(l.area)}</td><td class="p-3 tnum font-bold"><span class="inline-flex items-center gap-2">${faceFor(l.area, l.ms, 26)}${mmss(l.ms)}</span></td>
-    <td class="p-3 text-right"><button data-act="delLog" data-id="${l.id}" class="h-11 px-4 rounded-lg border border-red-500 text-red-400">Delete</button></td></tr>`).join("")
-    : '<tr><td colspan="5" class="p-4 text-slate-400">No runs match these filters.</td></tr>';
-  $("count").textContent = rows.length ? `${rows.length} runs, average ${mmss(rows.reduce((n, l) => n + l.ms, 0) / rows.length)}` : "";
-}
-
-/* ---------------------------- GRAPHS ---------------------------- */
-const PALETTE = ["#38bdf8", "#f472b6", "#a3e635", "#fb923c", "#c084fc", "#facc15", "#2dd4bf", "#f87171"];
-let picked = new Set(["__all"]), chart = null;
-const avg = a => a.length ? a.reduce((n, l) => n + l.ms, 0) / a.length : 0;
+function refreshAdmin() { renderLogs(); if (admSub === "graphs") renderInsights(); }
+$("srcSel").addEventListener("input", e => { source = e.target.value; $("fPerson").value = $("fCat").value = ""; refreshAdmin(); });
+["fFrom", "fTo", "fPerson", "fCat"].forEach(i => $(i).addEventListener("input", refreshAdmin));
+$("fClear").addEventListener("click", () => { $("fFrom").value = $("fTo").value = $("fPerson").value = $("fCat").value = ""; refreshAdmin(); });
 $("dayPick").value = ymd(Date.now());
 $("dayPick").addEventListener("input", renderInsights);
+
+function renderLogs() {
+  const names = [...new Set(records().map(r => r.who))].sort(), keep = $("fPerson").value;
+  $("fPerson").innerHTML = '<option value="">Everyone</option>' + names.map(n => `<option>${esc(n)}</option>`).join("");
+  if (names.includes(keep)) $("fPerson").value = keep;
+  const cNames = [...new Set([...cats.map(c => c.name), ...logs.map(l => l.area)])].sort(), cKeep = $("fCat").value;
+  $("fCat").innerHTML = '<option value="">All categories</option>' + cNames.map(n => `<option>${esc(n)}</option>`).join("");
+  if (cNames.includes(cKeep)) $("fCat").value = cKeep;
+  $("fCatWrap").classList.toggle("hidden", !isT());
+  $("thCat").textContent = isT() ? "Category" : "Note"; $("thVal").textContent = isT() ? "Duration" : "Value";
+  const rows = filtered();
+  $("logRows").innerHTML = rows.length ? rows.map(r => `<tr class="border-t border-slate-800"><td class="p-3 whitespace-nowrap">${fmtDT(r.t)}</td><td class="p-3">${esc(r.who)}</td>` +
+    (isT() ? `<td class="p-3 font-semibold" style="color:${colorOf(r.cat)}">${esc(r.cat)}</td><td class="p-3 tnum font-bold"><span class="inline-flex items-center gap-2">${faceFor(r.cat, r.ms, 26)}${fv(r)}</span></td>`
+           : `<td class="p-3">${esc(r.cat)}</td><td class="p-3 tnum font-bold">${fv(r)}</td>`) +
+    `<td class="p-3 text-right"><button data-act="delLog" data-id="${r.id}" data-coll="${r.coll}" class="btn-d">Delete</button></td></tr>`).join("")
+    : '<tr><td colspan="5" class="p-4 text-slate-400">No records match these filters.</td></tr>';
+  $("count").textContent = rows.length ? `${rows.length} records, average ${fa(avg(rows))}` : "";
+}
+
+/* ---------------------------- GRAPHS (line charts) ---------------------------- */
+const PALETTE = ["#38bdf8", "#f472b6", "#a3e635", "#fb923c", "#c084fc", "#facc15", "#2dd4bf", "#f87171"];
+let picked = new Set(["__all"]), chart = null;
 $("chips").addEventListener("click", e => {
   const k = e.target.closest("[data-chip]")?.dataset.chip; if (k === undefined) return;
   picked.has(k) ? picked.delete(k) : picked.add(k); renderInsights();
 });
 function renderInsights() {
-  const rows = filtered(), names = [...new Set(logs.map(l => l.staffName))].sort(), keys = ["__all", ...names];
+  if (!adminOK || admSub !== "graphs") return;
+  const rows = filtered(), names = [...new Set(records().map(r => r.who))].sort(), keys = ["__all", ...names];
   picked = new Set([...picked].filter(k => keys.includes(k)));
-  $("chips").innerHTML = keys.map(k => `<button data-chip="${esc(k)}" class="h-12 px-4 rounded-full border-2 font-semibold ${picked.has(k) ? "bg-white text-slate-900 border-white" : "border-slate-600"}">${k === "__all" ? "Store average" : esc(k)}</button>`).join("");
-  const series = [...picked].map(k => ({ label: k === "__all" ? "Store average" : k, rows: k === "__all" ? rows : rows.filter(l => l.staffName === k) }));
-  const days = [...new Set(rows.map(l => ymd(l.endMs)))].sort();
+  $("chips").innerHTML = keys.map(k => `<button data-chip="${esc(k)}" class="h-12 px-4 rounded-full border-2 font-semibold ${picked.has(k) ? "bg-white text-slate-900 border-white" : "border-slate-600"}">${k === "__all" ? "Everyone (average)" : esc(k)}</button>`).join("");
+  $("modes").innerHTML = [["run", "Each run"], ["day", "Daily average"]].map(([m, l]) => `<button data-act="mode" data-mode="${m}" class="h-11 px-4 rounded-lg font-semibold ${m === gMode ? "bg-slate-200 text-slate-900" : "bg-slate-800"}">${l}</button>`).join("");
+  const series = [...picked].map(k => ({ label: k === "__all" ? "Everyone (average)" : k, rows: k === "__all" ? rows : rows.filter(r => r.who === k) }));
+  const run = gMode === "run", days = [...new Set(rows.map(r => ymd(r.t)))].sort();
+  const dataFor = s => run ? s.rows.slice().sort((a, b) => a.t - b.t).map(r => ({ x: r.t, y: +r.val.toFixed(2) }))
+    : days.map(d => { const q = s.rows.filter(r => ymd(r.t) === d); return q.length ? +avg(q).toFixed(2) : null; });
+  const tick = { color: "#cbd5e1" }, grid = { color: "#334155" };
   if (window.Chart) {
     if (chart) chart.destroy();
     chart = new Chart($("chart"), { type: "line",
-      data: { labels: days, datasets: series.map((s, i) => ({ label: s.label, borderColor: PALETTE[i % 8], backgroundColor: PALETTE[i % 8], tension: .25, pointRadius: 5, spanGaps: true,
-        data: days.map(d => { const r = s.rows.filter(l => ymd(l.endMs) === d); return r.length ? +(avg(r) / 60000).toFixed(2) : null; }) })) },
-      options: { maintainAspectRatio: false, color: "#e2e8f0", scales: {
-        y: { beginAtZero: true, title: { display: true, text: "Average minutes per run", color: "#cbd5e1" }, ticks: { color: "#cbd5e1" }, grid: { color: "#334155" } },
-        x: { ticks: { color: "#cbd5e1" }, grid: { color: "#334155" } } } } });
+      data: { labels: run ? undefined : days, datasets: series.map((s, i) => ({ label: s.label, data: dataFor(s), borderColor: PALETTE[i % 8], backgroundColor: PALETTE[i % 8], borderWidth: 3, tension: .25, pointRadius: 5, showLine: true, spanGaps: true })) },
+      options: { maintainAspectRatio: false, color: "#e2e8f0", interaction: { mode: "nearest", intersect: false },
+        scales: { y: { beginAtZero: true, title: { display: true, text: isT() ? (run ? "Minutes per run" : "Average minutes") : unitOf(), color: "#cbd5e1" }, ticks: tick, grid },
+          x: run ? { type: "linear", ticks: { ...tick, maxTicksLimit: 6, callback: v => new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) }, grid } : { ticks: tick, grid } },
+        plugins: { tooltip: { callbacks: { title: it => run ? fmtDT(it[0].parsed.x) : it[0].label } } } } });
   }
   const day = $("dayPick").value;
-  $("statRows").innerHTML = series.length ? series.map(s => { const d = s.rows.filter(l => ymd(l.endMs) === day);
-    return `<tr class="border-t border-slate-800"><td class="p-3 font-semibold">${esc(s.label)}</td><td class="p-3">${s.rows.length}</td><td class="p-3 tnum">${s.rows.length ? mmss(avg(s.rows)) : "-"}</td><td class="p-3 tnum">${d.length ? mmss(avg(d)) + " (" + d.length + ")" : "-"}</td></tr>`; }).join("")
+  $("statRows").innerHTML = series.length ? series.map(s => { const d = s.rows.filter(r => ymd(r.t) === day);
+    return `<tr class="border-t border-slate-800"><td class="p-3 font-semibold">${esc(s.label)}</td><td class="p-3">${s.rows.length}</td><td class="p-3 tnum">${s.rows.length ? fa(avg(s.rows)) : "-"}</td><td class="p-3 tnum">${d.length ? fa(avg(d)) + " (" + d.length + ")" : "-"}</td></tr>`; }).join("")
     : '<tr><td colspan="4" class="p-3 text-slate-400">Pick a name above.</td></tr>';
 }
 
 /* ---------------------------- EXPORT ---------------------------- */
 function say(m, ok = true) { $("exMsg").textContent = m; $("exMsg").className = "text-sm mt-2 " + (ok ? "text-emerald-400" : "text-red-400"); }
+const heads = () => isT() ? ["Date & Time", "Person", "Category", "Duration (MM:SS)"] : ["Date & Time", "Person", "Note", "Value", "Unit"];
+const cells = r => isT() ? [fmtDT(r.t), r.who, r.cat, mmss(r.ms)] : [fmtDT(r.t), r.who, r.cat, +r.val.toFixed(2), unitOf()];
 function htmlTable(rows) {
   const s = "border:1px solid #ccc;padding:6px 10px";
-  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px"><tr>` +
-    ["Date & Time", "Staff Name", "Order Area", "Duration (MM:SS)"].map(h => `<th style="${s};background:#eee;text-align:left">${h}</th>`).join("") + `</tr>` +
-    rows.map(l => `<tr><td style="${s}">${fmtDT(l.endMs)}</td><td style="${s}">${esc(l.staffName)}</td><td style="${s}">${l.area}</td><td style="${s}">${mmss(l.ms)}</td></tr>`).join("") + `</table>`;
+  return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px"><tr>` + heads().map(h => `<th style="${s};background:#eee;text-align:left">${h}</th>`).join("") + `</tr>` +
+    rows.map(r => `<tr>${cells(r).map(c => `<td style="${s}">${esc(c)}</td>`).join("")}</tr>`).join("") + `</table>`;
 }
+const srcName = () => isT() ? "timers" : (pages.find(p => p.id === source)?.name || "data").replace(/\W+/g, "-").toLowerCase();
 $("btnCsv").addEventListener("click", () => {
-  const rows = filtered(); if (!rows.length) return say("No runs to export.", false);
+  const rows = filtered(); if (!rows.length) return say("No records to export.", false);
   const q = v => `"${String(v).replace(/"/g, '""')}"`;
-  const csv = ["Date & Time,Staff Name,Order Area,Duration (MM:SS)", ...rows.map(l => [fmtDT(l.endMs), l.staffName, l.area, mmss(l.ms)].map(q).join(","))].join("\n");
-  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `timerpal-runs-${storeId}-${ymd(Date.now())}.csv` });
+  const csv = [heads().map(q).join(","), ...rows.map(r => cells(r).map(q).join(","))].join("\n");
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([csv], { type: "text/csv" })), download: `timerpal-${srcName()}-${ymd(Date.now())}.csv` });
   a.click(); URL.revokeObjectURL(a.href); say("CSV downloaded.");
 });
 $("btnCopy").addEventListener("click", async () => {
-  const rows = filtered(); if (!rows.length) return say("No runs to copy.", false);
+  const rows = filtered(); if (!rows.length) return say("No records to copy.", false);
   const html = htmlTable(rows);
   try {
     if (window.ClipboardItem) await navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }), "text/plain": new Blob([html], { type: "text/plain" }) })]);
@@ -386,22 +436,19 @@ $("btnCopy").addEventListener("click", async () => {
 });
 $("btnEmail").addEventListener("click", async () => {
   const rows = filtered(), to = $("emailTo").value.trim();
-  if (!rows.length) return say("No runs to send.", false);
+  if (!rows.length) return say("No records to send.", false);
   if (!to) return say("Enter a recipient email.", false);
   if (Object.values(EMAILJS_CONFIG).some(v => v.startsWith("YOUR_"))) return say("EmailJS is not configured. Add your keys at the top of the script, or use CSV / Copy table.", false);
   say("Sending...");
   try {
     await emailjs.send(EMAILJS_CONFIG.service_id, EMAILJS_CONFIG.template_id,
-      { to_email: to, subject: `TimerPal report ${storeId} ${ymd(Date.now())}`, html_table: htmlTable(rows) }, { publicKey: EMAILJS_CONFIG.public_key });
+      { to_email: to, subject: `TimerPal report: ${srcName()} ${ymd(Date.now())}`, html_table: htmlTable(rows) }, { publicKey: EMAILJS_CONFIG.public_key });
     say("Email sent.");
   } catch (err) { say("Email failed: " + (err.text || err.message), false); }
 });
 
-function renderAll() { renderHome(); renderAreas(); renderStaff(); renderAdmin(); }
-
 /* ---------------------------- KEEP SCREEN ON ---------------------------- */
-// Uses the Screen Wake Lock API (needs HTTPS). The browser also releases it by itself when the
-// tablet is locked or you switch apps/tabs, so the tick is cleared in that case too.
+// Screen Wake Lock API (needs HTTPS). Cleared when you leave Home or the browser releases it.
 let wakeLock = null;
 async function setWake(on) {
   const box = $("keepAwake"), msg = $("awakeMsg");
@@ -410,28 +457,19 @@ async function setWake(on) {
       wakeLock = await navigator.wakeLock.request("screen");
       wakeLock.addEventListener("release", () => { wakeLock = null; box.checked = false; msg.textContent = ""; });
       msg.textContent = "Screen will stay on while you are on Home.";
-    } else {
-      box.checked = false; msg.textContent = "";
-      if (wakeLock) await wakeLock.release();
-      wakeLock = null;
-    }
-  } catch (err) {
-    box.checked = false; wakeLock = null;
-    msg.textContent = "Could not keep the screen on (" + (err.name || "error") + ").";
-  }
+    } else { box.checked = false; msg.textContent = ""; if (wakeLock) await wakeLock.release(); wakeLock = null; }
+  } catch (err) { box.checked = false; wakeLock = null; msg.textContent = "Could not keep the screen on (" + (err.name || "error") + ")."; }
 }
-if (!("wakeLock" in navigator)) {
-  $("keepAwake").disabled = true;
-  $("awakeMsg").textContent = "Not available in this browser or needs HTTPS.";
-}
+if (!("wakeLock" in navigator)) { $("keepAwake").disabled = true; $("awakeMsg").textContent = "Not available in this browser or needs HTTPS."; }
 $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
 
-/* ---------------------------- BOOT ---------------------------- */
+/* ---------------------------- RENDER ALL & BOOT ---------------------------- */
+function renderAll() { renderNav(); renderHome(); renderData(); renderCustom(); applySubs(); renderAdmin(); }
+document.querySelectorAll(".ver").forEach(el => el.textContent = VERSION);
 (async () => {
   if (!configured) return showErr("Firebase is not configured. Paste your keys into firebaseConfig in this file.");
-  let ses = null;
-  try { ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null"); } catch {}
-  if (ses && ses.id) { storeId = ses.id; startSync(); } // the store-doc listener signs out if the password changed
+  let ses = null; try { ses = JSON.parse(sessionStorage.getItem("lrt.session") || "null"); } catch {}
+  if (ses && ses.id) { storeId = ses.id; startSync(); } // the account listener signs out if the password changed
 })();
 </script>
 
@@ -439,13 +477,12 @@ $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
 <div id="loginScreen" class="min-h-screen flex items-center justify-center p-4">
   <form id="loginForm" onsubmit="return false" class="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 space-y-4">
     <div class="flex items-center gap-3"><svg class="w-16 h-16" role="img" aria-label="TimerPal logo"><use href="#tp-logo"/></svg>
-      <h1 class="text-4xl font-extrabold tracking-tight">Timer<span class="text-amber-400">Pal</span></h1></div>
-    <div><label for="storeId" class="block mb-1 font-medium">Account</label>
-      <input id="storeId" required autocomplete="off" class="w-full h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg"></div>
-    <div><label for="storePw" class="block mb-1 font-medium">Password</label>
-      <input id="storePw" type="password" required class="w-full h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg"></div>
+      <div><h1 class="text-4xl font-extrabold tracking-tight">Timer<span class="text-amber-400">Pal</span></h1><div class="text-xs text-slate-400 ver"></div></div></div>
+    <p class="text-slate-300">Time anything. Track everything.</p>
+    <div><label for="storeId" class="lbl">Account</label><input id="storeId" required autocomplete="off" class="inp"></div>
+    <div><label for="storePw" class="lbl">Password</label><input id="storePw" type="password" required class="inp"></div>
     <p id="loginErr" class="text-red-400 min-h-[1.5rem]" role="alert"></p>
-    <button id="loginBtn" class="w-full h-16 rounded-xl bg-white text-slate-900 text-xl font-extrabold disabled:opacity-50">Sign in</button>
+    <button id="loginBtn" class="btn btn-w w-full h-16 text-xl disabled:opacity-50">Sign in</button>
     <p class="text-sm text-slate-400">A new account is created the first time you sign in with a new account name.</p>
   </form>
 </div>
@@ -455,15 +492,11 @@ $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
   <header class="bg-slate-900 border-b border-slate-700 px-4 py-3">
     <div class="max-w-6xl mx-auto flex flex-wrap items-center gap-3">
       <div class="mr-auto flex items-center gap-3"><svg class="w-11 h-11" role="img" aria-label="TimerPal logo"><use href="#tp-logo"/></svg>
-        <div><div class="text-xl font-extrabold leading-none">Timer<span class="text-amber-400">Pal</span></div>
-        <div class="text-xs text-slate-400">Account: <b id="storeLabel" class="text-slate-200"></b> <span class="text-slate-600">v7</span></div></div></div>
-      <nav class="flex gap-2">
-        <button id="tab-home" data-act="tab" data-page="home">Home</button>
-        <button id="tab-staff" data-act="tab" data-page="staff">Customization</button>
-        <button id="tab-admin" data-act="tab" data-page="admin">Admin</button>
-      </nav>
+        <div><div class="text-xl font-extrabold leading-none">Timer<span class="text-amber-400">Pal</span> <span class="ver text-[10px] font-semibold bg-amber-400 text-slate-900 rounded px-1.5 py-0.5 align-middle"></span></div>
+        <div class="text-xs text-slate-400">Account: <b id="storeLabel" class="text-slate-200"></b></div></div></div>
+      <nav id="nav" class="flex flex-wrap gap-2"></nav>
       <div class="flex items-center gap-2 text-sm"><span id="dot" class="inline-block w-3 h-3 rounded-full bg-red-500"></span><span id="statusTxt">Offline</span></div>
-      <button id="logout" class="h-12 px-4 rounded-lg border border-slate-600 text-sm">Log out</button>
+      <button id="logout" class="btn-d !border-slate-600 !text-slate-100 text-sm">Log out</button>
     </div>
   </header>
 
@@ -471,38 +504,69 @@ $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
     <!-- HOME -->
     <section id="page-home" class="space-y-6">
       <div class="flex flex-wrap items-center gap-3">
-        <label id="keepAwakeWrap" class="inline-flex items-center gap-3 h-14 px-4 rounded-xl bg-slate-900 border border-slate-700 text-lg font-semibold cursor-pointer">
-          <input id="keepAwake" type="checkbox" class="w-7 h-7 accent-emerald-500"> Keep screen on
-        </label>
+        <label class="inline-flex items-center gap-3 h-14 px-4 rounded-xl bg-slate-900 border border-slate-700 text-lg font-semibold cursor-pointer">
+          <input id="keepAwake" type="checkbox" class="w-7 h-7 accent-emerald-500"> Keep screen on</label>
         <span id="awakeMsg" class="text-sm text-slate-400" role="status"></span>
       </div>
-      <div><h2 class="text-xl font-bold mb-2">1. Who is running?</h2><div id="staffPick" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
-      <div><h2 class="text-xl font-bold mb-2">2. Which area?</h2><div id="areaPick" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div></div>
-      <div id="startWrap" class="hidden"><button id="startBtn" class="w-full h-24 rounded-2xl bg-white text-slate-900 text-3xl font-extrabold">START TIMER</button></div>
+      <div><h2 class="text-xl font-bold mb-2">1. Who is timing?</h2><div id="personPick" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
+      <div><h2 class="text-xl font-bold mb-2">2. Which category?</h2><div id="catPick" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div></div>
+      <div id="startWrap" class="hidden"><button id="startBtn" data-act="start" class="w-full h-24 rounded-2xl bg-white text-slate-900 text-3xl font-extrabold">START TIMER</button></div>
       <div><h2 class="text-xl font-bold mb-2">Running timers</h2><div id="timerList" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div></div>
     </section>
 
-    <!-- CUSTOMIZATION -->
-    <section id="page-staff" class="hidden max-w-3xl space-y-8">
-      <div>
-        <h2 class="text-xl font-bold mb-1">Timing areas</h2>
-        <p class="text-sm text-slate-400 mb-3">Set a threshold in minutes to show a mood face on the timer. It stays happy until the threshold, then turns sad and is crying 10 minutes later. Leave it blank for no face.</p>
-        <form id="areaForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_auto_1fr_auto]">
-          <input id="areaName" required maxlength="30" placeholder="Area name (e.g. Ambient)" aria-label="Area name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
-          <input id="areaColor" type="color" value="#14b8a6" aria-label="Area colour" class="h-14 w-full sm:w-20 rounded-lg bg-slate-800 border border-slate-600 p-1">
-          <input id="areaTh" type="number" min="0" step="1" placeholder="Threshold (min)" aria-label="Threshold in minutes" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
-          <button class="h-14 px-6 rounded-lg bg-white text-slate-900 font-bold">Add area</button>
-        </form>
-        <ul id="areaRows" class="mt-3 divide-y divide-slate-800"></ul>
+    <!-- CUSTOM DATA PAGE (one template, used by every page you create) -->
+    <section id="page-data" class="hidden space-y-5 max-w-3xl">
+      <h2 id="dataTitle" class="text-2xl font-extrabold"></h2>
+      <div><h3 class="font-bold mb-2">1. Who?</h3><div id="entPick" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div></div>
+      <div class="grid gap-3 sm:grid-cols-[1fr_2fr]">
+        <div><label for="entVal" class="lbl">Value (<span id="entUnit"></span>)</label><input id="entVal" type="number" step="any" inputmode="decimal" class="inp"></div>
+        <div><label for="entNote" class="lbl">Note (optional)</label><input id="entNote" maxlength="60" class="inp"></div>
       </div>
-      <div>
-        <h2 class="text-xl font-bold mb-3">Staff roster</h2>
+      <button id="entSave" class="btn btn-w w-full h-20 text-2xl">SAVE ENTRY</button>
+      <p id="entMsg" class="text-sm min-h-[1.25rem]" role="status"></p>
+      <div><h3 class="font-bold mb-1">Latest entries</h3><ul id="entRecent" class="divide-y divide-slate-800"></ul></div>
+    </section>
+
+    <!-- CUSTOMIZATION -->
+    <section id="page-custom" class="hidden max-w-3xl space-y-4">
+      <div class="flex flex-wrap gap-2">
+        <button id="sb-cust-people" data-act="sub" data-group="cust" data-name="people">People</button>
+        <button id="sb-cust-cats" data-act="sub" data-group="cust" data-name="cats">Categories</button>
+        <button id="sb-cust-pages" data-act="sub" data-group="cust" data-name="pages">New pages</button>
+      </div>
+      <div id="cp-people">
+        <h2 class="text-xl font-bold mb-3">People</h2>
         <form id="staffForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_1fr_auto]">
-          <input id="firstName" required maxlength="30" placeholder="First name" aria-label="First name" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg">
-          <input id="lastName" required maxlength="1" placeholder="Last initial" aria-label="Last initial" class="h-14 rounded-lg bg-slate-800 border border-slate-600 px-4 text-lg uppercase">
-          <button class="h-14 px-6 rounded-lg bg-white text-slate-900 font-bold">Add staff</button>
+          <input id="firstName" required maxlength="30" placeholder="First name" aria-label="First name" class="inp">
+          <input id="lastName" required maxlength="1" placeholder="Last initial" aria-label="Last initial" class="inp uppercase">
+          <button class="btn btn-w">Add person</button>
         </form>
-        <ul id="staffRows" class="mt-4 divide-y divide-slate-800"></ul>
+        <ul id="personRows" class="mt-4 divide-y divide-slate-800"></ul>
+      </div>
+      <div id="cp-cats" class="hidden">
+        <h2 class="text-xl font-bold mb-1">Categories</h2>
+        <p class="text-sm text-slate-400 mb-3">Add a threshold in minutes to show a mood face on the timer. It stays happy until the threshold, then turns sad and is crying 10 minutes later. Leave it blank for no face.</p>
+        <form id="catForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_auto_1fr_auto]">
+          <input id="catName" required maxlength="30" placeholder="Category name" aria-label="Category name" class="inp">
+          <input id="catColor" type="color" value="#14b8a6" aria-label="Category colour" class="inp !p-1 sm:!w-20">
+          <input id="catTh" type="number" min="0" step="1" placeholder="Threshold (min)" aria-label="Threshold in minutes" class="inp">
+          <button class="btn btn-w">Add category</button>
+        </form>
+        <ul id="catRows" class="mt-3 divide-y divide-slate-800"></ul>
+      </div>
+      <div id="cp-pages" class="hidden">
+        <h2 class="text-xl font-bold mb-1">New pages for data</h2>
+        <p class="text-sm text-slate-400 mb-3">Each page gets its own tab where you pick a person and type in a number, like till speed. It uses the same people, and its data shows up in Admin.</p>
+        <div class="flex flex-wrap gap-2 mb-3">
+          <button data-act="preset" data-name="Till speed" data-unit="items/min" class="btn btn-o">+ Till speed</button>
+          <button data-act="preset" data-name="Bulk items" data-unit="items" class="btn btn-o">+ Bulk items</button>
+        </div>
+        <form id="pageForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_1fr_auto]">
+          <input id="pageName" required maxlength="30" placeholder="Page name" aria-label="Page name" class="inp">
+          <input id="pageUnit" maxlength="20" placeholder="Unit (e.g. items/min)" aria-label="Unit" class="inp">
+          <button class="btn btn-w">Add page</button>
+        </form>
+        <ul id="pageRows" class="mt-3 divide-y divide-slate-800"></ul>
       </div>
     </section>
 
@@ -510,61 +574,74 @@ $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
     <section id="page-admin" class="hidden">
       <form id="pinGate" onsubmit="return false" class="max-w-sm space-y-3">
         <h2 class="text-xl font-bold">Manager PIN</h2>
-        <input id="pinIn" type="password" inputmode="numeric" maxlength="4" pattern="\d{4}" required aria-label="4-digit PIN" class="w-full h-16 rounded-lg bg-slate-800 border border-slate-600 px-4 text-3xl tracking-[1em] text-center">
+        <input id="pinIn" type="password" inputmode="numeric" maxlength="4" pattern="\d{4}" required aria-label="4-digit PIN" class="inp !h-16 !text-3xl tracking-[1em] text-center">
         <p id="pinErr" class="text-red-400 min-h-[1.5rem]" role="alert"></p>
-        <button class="w-full h-14 rounded-lg bg-white text-slate-900 font-bold">Unlock</button>
+        <button class="btn btn-w w-full">Unlock</button>
       </form>
 
-      <div id="adminBody" class="hidden space-y-5">
-        <div class="flex justify-between items-center"><h2 class="text-xl font-bold">Shift logs</h2><button id="lockBtn" class="h-11 px-4 rounded-lg border border-slate-600">Lock</button></div>
-        <div class="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]">
-          <div><label for="fFrom" class="block text-sm mb-1">From</label><input id="fFrom" type="date" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></div>
-          <div><label for="fTo" class="block text-sm mb-1">To</label><input id="fTo" type="date" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></div>
-          <div><label for="fStaff" class="block text-sm mb-1">Staff</label><select id="fStaff" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></select></div>
-          <div><label for="fArea" class="block text-sm mb-1">Area</label><select id="fArea" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></select></div>
-          <button id="fClear" class="h-12 self-end px-4 rounded-lg border border-slate-600">Clear</button>
+      <div id="adminBody" class="hidden space-y-4">
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div class="min-w-[12rem]"><label for="srcSel" class="lbl">Data</label><select id="srcSel" class="inp !h-12"></select></div>
+          <button id="lockBtn" class="btn btn-o !h-12">Lock</button>
         </div>
-        <div id="count" class="text-sm text-slate-400"></div>
-        <div class="overflow-x-auto border border-slate-700 rounded-lg">
-          <table class="w-full text-left"><thead class="bg-slate-800"><tr><th class="p-3">Date &amp; time</th><th class="p-3">Staff name</th><th class="p-3">Order area</th><th class="p-3">Duration</th><th></th></tr></thead>
-          <tbody id="logRows"></tbody></table>
+        <div class="flex flex-wrap gap-2">
+          <button id="sb-adm-logs" data-act="sub" data-group="adm" data-name="logs">Records</button>
+          <button id="sb-adm-graphs" data-act="sub" data-group="adm" data-name="graphs">Graphs</button>
+          <button id="sb-adm-export" data-act="sub" data-group="adm" data-name="export">Export</button>
+          <button id="sb-adm-security" data-act="sub" data-group="adm" data-name="security">Security</button>
+        </div>
+        <div id="filterBar" class="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]">
+          <div><label for="fFrom" class="lbl">From</label><input id="fFrom" type="date" class="inp !h-12"></div>
+          <div><label for="fTo" class="lbl">To</label><input id="fTo" type="date" class="inp !h-12"></div>
+          <div><label for="fPerson" class="lbl">Person</label><select id="fPerson" class="inp !h-12"></select></div>
+          <div id="fCatWrap"><label for="fCat" class="lbl">Category</label><select id="fCat" class="inp !h-12"></select></div>
+          <button id="fClear" class="btn btn-o !h-12 self-end">Clear</button>
         </div>
 
-        <div class="border-t border-slate-800 pt-4 space-y-3">
-          <h3 class="font-bold">Graphs and averages</h3>
-          <p class="text-sm text-slate-400">Tap names to compare them. "Store average" combines everyone. Uses the filters above.</p>
+        <div id="ap-logs" class="space-y-2">
+          <div id="count" class="text-sm text-slate-400"></div>
+          <div class="overflow-x-auto border border-slate-700 rounded-lg">
+            <table class="w-full text-left"><thead class="bg-slate-800"><tr><th class="p-3">Date &amp; time</th><th class="p-3">Person</th><th id="thCat" class="p-3"></th><th id="thVal" class="p-3"></th><th></th></tr></thead>
+            <tbody id="logRows"></tbody></table>
+          </div>
+        </div>
+
+        <div id="ap-graphs" class="hidden space-y-3">
+          <p class="text-sm text-slate-400">Tap names to compare them. "Everyone (average)" combines all people. Uses the filters above.</p>
           <div id="chips" class="flex flex-wrap gap-2"></div>
+          <div id="modes" class="flex gap-2"></div>
           <div class="bg-slate-900 border border-slate-700 rounded-xl p-3"><div class="h-72"><canvas id="chart"></canvas></div></div>
-          <div class="max-w-xs"><label for="dayPick" class="block text-sm mb-1">Day average for</label><input id="dayPick" type="date" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3"></div>
-          <div class="overflow-x-auto border border-slate-700 rounded-lg"><table class="w-full text-left"><thead class="bg-slate-800"><tr><th class="p-3">Name</th><th class="p-3">Runs</th><th class="p-3">Overall average</th><th class="p-3">Average on day (runs)</th></tr></thead><tbody id="statRows"></tbody></table></div>
+          <div class="max-w-xs"><label for="dayPick" class="lbl">Day average for</label><input id="dayPick" type="date" class="inp !h-12"></div>
+          <div class="overflow-x-auto border border-slate-700 rounded-lg"><table class="w-full text-left"><thead class="bg-slate-800"><tr><th class="p-3">Name</th><th class="p-3">Records</th><th class="p-3">Overall average</th><th class="p-3">Average on day (count)</th></tr></thead><tbody id="statRows"></tbody></table></div>
         </div>
 
-        <div class="border-t border-slate-800 pt-4">
-          <h3 class="font-bold mb-2">Export the rows shown above</h3>
+        <div id="ap-export" class="hidden">
+          <h3 class="font-bold mb-2">Export the records shown by the filters</h3>
           <div class="grid gap-2 sm:grid-cols-[2fr_auto_auto_auto]">
-            <input id="emailTo" type="email" placeholder="Recipient email" aria-label="Recipient email" class="h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
-            <button id="btnEmail" class="h-12 px-5 rounded-lg bg-white text-slate-900 font-bold">Email results</button>
-            <button id="btnCsv" class="h-12 px-5 rounded-lg border border-slate-600">Export CSV</button>
-            <button id="btnCopy" class="h-12 px-5 rounded-lg border border-slate-600">Copy table</button>
+            <input id="emailTo" type="email" placeholder="Recipient email" aria-label="Recipient email" class="inp !h-12">
+            <button id="btnEmail" class="btn btn-w !h-12">Email results</button>
+            <button id="btnCsv" class="btn btn-o !h-12">Export CSV</button>
+            <button id="btnCopy" class="btn btn-o !h-12">Copy table</button>
           </div>
           <p id="exMsg" class="text-sm mt-2" role="status"></p>
         </div>
 
-        <form id="pinChange" onsubmit="return false" class="border-t border-slate-800 pt-4 flex flex-wrap items-end gap-2">
-          <div><label for="newPin" class="block text-sm mb-1">Change manager PIN</label>
-            <input id="newPin" inputmode="numeric" maxlength="4" pattern="\d{4}" class="h-12 w-32 rounded-lg bg-slate-800 border border-slate-600 px-3 text-center tracking-widest"></div>
-          <button class="h-12 px-5 rounded-lg border border-slate-600">Save PIN</button>
-          <span id="pinMsg" class="text-sm text-slate-400"></span>
-        </form>
-
-        <form id="pwChange" onsubmit="return false" class="border-t border-slate-800 pt-4 space-y-2 max-w-md">
-          <h3 class="font-bold">Change account password</h3>
-          <input id="curPw" type="password" required placeholder="Current password" aria-label="Current password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
-          <input id="newPw" type="password" required minlength="4" placeholder="New password" aria-label="New password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
-          <input id="newPw2" type="password" required minlength="4" placeholder="Confirm new password" aria-label="Confirm new password" class="w-full h-12 rounded-lg bg-slate-800 border border-slate-600 px-3">
-          <button class="h-12 px-5 rounded-lg border border-slate-600">Change password</button>
-          <p id="pwMsg" class="text-sm" role="status"></p>
-        </form>
+        <div id="ap-security" class="hidden space-y-6">
+          <form id="pinChange" onsubmit="return false" class="flex flex-wrap items-end gap-2">
+            <div><label for="newPin" class="lbl">Change manager PIN</label>
+              <input id="newPin" inputmode="numeric" maxlength="4" pattern="\d{4}" class="inp !h-12 !w-32 text-center tracking-widest"></div>
+            <button class="btn btn-o !h-12">Save PIN</button>
+            <span id="pinMsg" class="text-sm text-slate-400"></span>
+          </form>
+          <form id="pwChange" onsubmit="return false" class="space-y-2 max-w-md">
+            <h3 class="font-bold">Change account password</h3>
+            <input id="curPw" type="password" required placeholder="Current password" aria-label="Current password" class="inp !h-12">
+            <input id="newPw" type="password" required minlength="4" placeholder="New password" aria-label="New password" class="inp !h-12">
+            <input id="newPw2" type="password" required minlength="4" placeholder="Confirm new password" aria-label="Confirm new password" class="inp !h-12">
+            <button class="btn btn-o !h-12">Change password</button>
+            <p id="pwMsg" class="text-sm" role="status"></p>
+          </form>
+        </div>
       </div>
     </section>
   </main>
@@ -579,8 +656,8 @@ $("keepAwake").addEventListener("change", e => setWake(e.target.checked));
        match /stores/{store} { allow read, write: if true; }
      }
    }
- This is open access: the store password is only checked in the browser.
- For anything beyond internal use, add Firebase Anonymous Auth and tighten these rules.
+ This is open access: the account password is only checked in the browser.
+ For anything sensitive, add Firebase Anonymous Auth and tighten these rules.
 -->
 </body>
 </html>
