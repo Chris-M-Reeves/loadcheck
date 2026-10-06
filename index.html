@@ -59,7 +59,7 @@ const firebaseConfig = {
 };
 const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
 const DEFAULT_PIN = "1234"; // used until changed in Admin > Security
-const VERSION = "Beta 0.08";
+const VERSION = "Beta 0.1";
 /* ---------------------------------------------------------------- */
 
 const $ = id => document.getElementById(id);
@@ -85,6 +85,22 @@ const col = name => collection(db, "stores", storeId, name);
 const ref = (name, id) => doc(db, "stores", storeId, name, id);
 const areaOf = n => cats.find(a => a.name === n);
 const colorOf = n => areaOf(n)?.color || "#94a3b8";
+const curPage = () => pages.find(p => p.id === source);
+const num = v => parseFloat(String(v).replace(",", "."));
+const dateMs = d => d === ymd(Date.now()) ? Date.now() : new Date(d + "T12:00:00").getTime();
+const entDT = e => e.date ? (e.dateEnd ? `${e.date} to ${e.dateEnd}` : e.date) : fmtDT(e.endMs);
+// Page ranking: 2 = at/above standard (green smiley), 1 = just below, within the neutral band (yellow), 0 = further below (red sad)
+const RANKS = ["Below standard", "Just below standard", "At or above standard"];
+function rankOf(pg, v) {
+  if (!pg || !(pg.std > 0) || !Number.isFinite(v)) return null;
+  const d = (pg.dir || "high") === "high" ? v - pg.std : pg.std - v;
+  return d >= 0 ? 2 : d >= -(pg.band || 0) ? 1 : 0;
+}
+function rankFace(l, size) {
+  const fill = ["#ef4444", "#facc15", "#22c55e"][l], mouth = ["M19 49Q32 37 45 49", "M20 46H44", "M19 43Q32 56 45 43"][l];
+  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" role="img" aria-label="${RANKS[l]}"><title>${RANKS[l]}</title><circle cx="32" cy="32" r="29" fill="${fill}" stroke="#0f172a" stroke-width="2"/><circle cx="23" cy="26" r="3.2" fill="#0f172a"/><circle cx="41" cy="26" r="3.2" fill="#0f172a"/><path d="${mouth}" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+}
+const rf = (pg, v, size) => { const l = rankOf(pg, v); return l === null ? "" : rankFace(l, size); };
 
 // Mood face: t = 0 happy ... 1 crying. Happy until the category's threshold, crying 10 minutes after it.
 function faceSVG(t, size) {
@@ -159,7 +175,7 @@ function lockAdmin() { adminOK = false; }
 function showPage(p) {
   if (p !== "admin" && adminOK) lockAdmin();                        // Admin locks when you leave it
   if (p !== "home" && $("keepAwake").checked) setWake(false);       // keep-awake only applies on Home
-  if (p.startsWith("p:")) { page = "data"; dataId = p.slice(2); entPerson = null; } else page = p;
+  if (p.startsWith("p:")) { page = "data"; dataId = p.slice(2); entPerson = null; draft = {}; } else page = p;
   ["home", "data", "custom", "admin"].forEach(n => $("page-" + n).classList.toggle("hidden", n !== page));
   renderAll();
 }
@@ -208,9 +224,6 @@ document.addEventListener("click", async e => {
   else if (act === "delCat") { const a = cats.find(x => x.id === id); if (confirm(`Delete the category "${a.name}"? Past records keep its name.`)) await deleteDoc(ref("areas", id)); }
   else if (act === "delPage") { const p = pages.find(x => x.id === id); if (confirm(`Delete the page "${p.name}"? Its saved entries will no longer be viewable.`)) await deleteDoc(ref("pages", id)); }
   else if (act === "delLog") { if (confirm("Delete this record?")) await deleteDoc(ref(t.dataset.coll, id)); }
-  else if (act === "preset") {
-    if (!pages.some(p => p.name.toLowerCase() === t.dataset.name.toLowerCase())) await addDoc(col("pages"), { name: t.dataset.name, unit: t.dataset.unit });
-  }
 });
 
 /* ---------------------------- HOME ---------------------------- */
@@ -245,24 +258,64 @@ setInterval(() => timers.forEach(t => {
 }), 500);
 
 /* ---------------------------- DATA PAGES (custom) ---------------------------- */
+let draft = {};
+const entKey = (pg, pid, di) => `${pg.id}_${pid}_${di.date}${di.dateEnd ? "_" + di.dateEnd : ""}`; // list entries: one per person per date, re-saving replaces
+const entBase = (pg, s, di) => ({ pageId: pg.id, pageName: pg.name, unit: pg.unit || "", personId: s.id, staffName: full(s), date: di.date, dateEnd: di.dateEnd, endMs: di.ms });
 function entMsg(m, ok = true) { $("entMsg").textContent = m; $("entMsg").className = "text-sm " + (ok ? "text-emerald-400" : "text-red-400"); }
+function dateInfo(loud) {
+  const from = $("dFrom").value, to = $("dTo").value, range = $("dMode").value === "range";
+  const bad = !from ? "Pick a date first." : range && (!to || to < from) ? "The end date must be on or after the start date." : "";
+  if (bad) { if (loud) entMsg(bad, false); return null; }
+  return { date: from, dateEnd: range ? to : "", ms: dateMs(from) };
+}
+$("dFrom").value = $("dTo").value = ymd(Date.now());
+["dMode", "dFrom", "dTo"].forEach(i => $(i).addEventListener("input", () => { draft = {}; renderData(); }));
 function renderData() {
   if (page !== "data") return;
   const pg = pages.find(p => p.id === dataId);
   if (!pg) return showPage("home");
-  if (entPerson && !people.some(s => s.id === entPerson)) entPerson = null;
+  const list = pg.format === "list", range = $("dMode").value === "range";
+  $("ent-quick").classList.toggle("hidden", list); $("ent-list").classList.toggle("hidden", !list);
   $("dataTitle").textContent = pg.name; $("entUnit").textContent = pg.unit || "value";
-  $("entPick").innerHTML = people.length ? people.map(s => `<button data-act="pickEnt" data-id="${s.id}" style="--c:#fff" class="pick ${s.id === entPerson ? "sel" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}</button>`).join("")
-    : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
-  const rec = entries.filter(e => e.pageId === pg.id).slice(0, 6);
-  $("entRecent").innerHTML = rec.length ? rec.map(e => `<li class="py-2 flex justify-between gap-2"><span>${esc(shortName(e.staffName))} <span class="text-slate-400">${esc(e.note || "")}</span></span><span class="tnum font-semibold">${+e.value} ${esc(e.unit || "")} <span class="text-slate-500 text-sm">${fmtDT(e.endMs)}</span></span></li>`).join("") : '<li class="py-2 text-slate-400">Nothing saved yet.</li>';
+  $("dFromLbl").textContent = range ? "From" : "Day"; $("dToWrap").classList.toggle("hidden", !range);
+  if (entPerson && !people.some(s => s.id === entPerson)) entPerson = null;
+  if (list) {
+    if (!($("listRows").contains(document.activeElement) && document.activeElement.tagName === "INPUT")) { // don't wipe a box being typed in
+      const di = dateInfo(false);
+      $("listRows").innerHTML = people.length ? people.map(s => {
+        const ex = di && entries.find(e => e.id === entKey(pg, s.id, di)), v = draft[s.id] ?? (ex ? ex.value : "");
+        return `<li class="flex items-center gap-3 p-3"><span class="grow text-lg font-semibold">${esc(full(s))}</span><span data-rank class="w-9 h-9">${rf(pg, num(v), 36)}</span>
+          <input data-lid="${s.id}" type="text" inputmode="decimal" value="${esc(v)}" placeholder="${esc(pg.unit || "value")}" aria-label="Value for ${esc(full(s))}" class="inp !h-12 !w-32 text-center"></li>`; }).join("")
+        : '<li class="p-3 text-slate-400">No people yet. Add some in Customization.</li>';
+    }
+  } else {
+    $("entPick").innerHTML = people.length ? people.map(s => `<button data-act="pickEnt" data-id="${s.id}" style="--c:#fff" class="pick ${s.id === entPerson ? "sel" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}</button>`).join("")
+      : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
+  }
+  const rec = entries.filter(e => e.pageId === pg.id).slice(0, 8);
+  $("entRecent").innerHTML = rec.length ? rec.map(e => `<li class="py-2 flex items-center justify-between gap-2"><span class="flex items-center gap-2">${rf(pg, +e.value, 28)}<span>${esc(shortName(e.staffName))} <span class="text-slate-400">${esc(e.note || "")}</span></span></span><span class="tnum font-semibold text-right">${+e.value} ${esc(e.unit || "")} <span class="block text-slate-500 text-xs font-normal">${esc(entDT(e))}</span></span></li>`).join("") : '<li class="py-2 text-slate-400">Nothing saved yet.</li>';
 }
+$("listRows").addEventListener("input", e => {
+  const id = e.target.dataset.lid; if (!id) return;
+  draft[id] = e.target.value;
+  e.target.closest("li").querySelector("[data-rank]").innerHTML = rf(pages.find(p => p.id === dataId), num(e.target.value), 36); // live face while typing
+});
 $("entSave").addEventListener("click", async () => {
-  const pg = pages.find(p => p.id === dataId), s = people.find(x => x.id === entPerson), v = parseFloat($("entVal").value);
+  const pg = pages.find(p => p.id === dataId), s = people.find(x => x.id === entPerson), v = parseFloat($("entVal").value), di = dateInfo(true);
+  if (!di) return;
   if (!s) return entMsg("Pick a person first.", false);
   if (!Number.isFinite(v)) return entMsg("Enter a number.", false);
-  await addDoc(col("entries"), { pageId: pg.id, pageName: pg.name, unit: pg.unit || "", staffName: full(s), value: v, note: $("entNote").value.trim(), endMs: Date.now() });
+  await addDoc(col("entries"), { ...entBase(pg, s, di), value: v, note: $("entNote").value.trim() });
   $("entVal").value = ""; $("entNote").value = ""; entPerson = null; renderData(); entMsg("Saved.");
+});
+$("listSave").addEventListener("click", async () => {
+  const pg = pages.find(p => p.id === dataId), di = dateInfo(true); if (!di) return;
+  const jobs = [...$("listRows").querySelectorAll("input[data-lid]")].map(inp => {
+    const s = people.find(x => x.id === inp.dataset.lid), v = num(inp.value);
+    return s && inp.value.trim() !== "" && Number.isFinite(v) ? setDoc(ref("entries", entKey(pg, s.id, di)), { ...entBase(pg, s, di), value: v, note: "" }) : null;
+  }).filter(Boolean);
+  if (!jobs.length) return entMsg("Type at least one value first.", false);
+  await Promise.all(jobs); draft = {}; renderData(); entMsg(`Saved ${jobs.length} ${jobs.length === 1 ? "entry" : "entries"}.`);
 });
 
 /* ---------------------------- CUSTOMIZATION ---------------------------- */
@@ -283,7 +336,12 @@ $("pageForm").addEventListener("submit", async e => {
   e.preventDefault();
   const name = $("pageName").value.trim(); if (!name) return;
   if (pages.some(p => p.name.toLowerCase() === name.toLowerCase())) return alert("That page already exists.");
-  await addDoc(col("pages"), { name, unit: $("pageUnit").value.trim() }); e.target.reset(); $("pageName").focus();
+  await addDoc(col("pages"), { name, unit: $("pageUnit").value.trim(), format: $("pageFmt").value, dir: $("pageDir").value, std: Math.max(0, num($("pageStd").value) || 0), band: Math.max(0, num($("pageBand").value) || 0) });
+  e.target.reset(); $("pageName").focus();
+});
+$("pageRows").addEventListener("change", async e => {
+  const { pid, f } = e.target.dataset; if (!pid) return;
+  await updateDoc(ref("pages", pid), { [f]: f === "std" || f === "band" ? Math.max(0, num(e.target.value) || 0) : e.target.value });
 });
 $("catRows").addEventListener("change", async e => {
   const { aid, f } = e.target.dataset; if (!aid) return;
@@ -291,7 +349,16 @@ $("catRows").addEventListener("change", async e => {
 });
 function renderCustom() {
   $("personRows").innerHTML = people.length ? people.map(s => `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span><button data-act="delPerson" data-id="${s.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No people yet.</li>';
-  $("pageRows").innerHTML = pages.length ? pages.map(p => `<li class="flex items-center justify-between py-3"><span class="text-lg"><b>${esc(p.name)}</b> <span class="text-slate-400">measured in ${esc(p.unit || "numbers")}</span></span><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No extra pages yet.</li>';
+  if (!($("pageRows").contains(document.activeElement) && document.activeElement.matches("input,select"))) // don't wipe a field being edited
+    $("pageRows").innerHTML = pages.length ? pages.map(p => { const d = `data-pid="${p.id}"`, f = "inp !h-11 !text-base";
+      return `<li class="py-3 space-y-2"><div class="flex items-center justify-between gap-2"><b class="text-lg">${esc(p.name)}</b><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></div>
+      <div class="grid gap-2 grid-cols-2 sm:grid-cols-5 text-sm text-slate-400">
+        <label>Unit<input ${d} data-f="unit" maxlength="20" value="${esc(p.unit || "")}" class="${f}"></label>
+        <label>Format<select ${d} data-f="format" class="${f}"><option value="quick" ${p.format !== "list" ? "selected" : ""}>Quick entry</option><option value="list" ${p.format === "list" ? "selected" : ""}>List</option></select></label>
+        <label>Standard<input ${d} data-f="std" type="number" step="any" min="0" value="${p.std || ""}" placeholder="off" class="${f}"></label>
+        <label>Neutral band<input ${d} data-f="band" type="number" step="any" min="0" value="${p.band || ""}" placeholder="0" class="${f}"></label>
+        <label>Better when<select ${d} data-f="dir" class="${f}"><option value="high" ${p.dir !== "low" ? "selected" : ""}>Higher</option><option value="low" ${p.dir === "low" ? "selected" : ""}>Lower</option></select></label>
+      </div></li>`; }).join("") : '<li class="py-3 text-slate-400">No extra pages yet.</li>';
   if ($("catRows").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return; // don't wipe a field being edited
   $("catRows").innerHTML = cats.length ? cats.map(a => `<li class="flex flex-wrap items-center gap-3 py-3">
     <input type="color" value="${esc(a.color)}" data-aid="${a.id}" data-f="color" aria-label="Colour for ${esc(a.name)}" class="w-14 h-12 rounded bg-transparent">
@@ -331,8 +398,9 @@ $("pwChange").addEventListener("submit", async e => {
 const isT = () => source === "timers";
 const unitOf = () => isT() ? "min" : (pages.find(p => p.id === source)?.unit || "");
 function records() { // one common shape for timer runs and custom-page entries
+  const pg = curPage();
   return isT() ? logs.map(l => ({ id: l.id, coll: "logs", who: l.staffName, cat: l.area, ms: l.ms, val: l.ms / 60000, t: l.endMs }))
-    : entries.filter(e => e.pageId === source).map(e => ({ id: e.id, coll: "entries", who: shortName(e.staffName), cat: e.note || "", val: +e.value, t: e.endMs }));
+    : entries.filter(e => e.pageId === source).map(e => ({ id: e.id, coll: "entries", who: shortName(e.staffName), cat: e.note || "", val: +e.value, t: e.endMs, dt: entDT(e), lvl: rankOf(pg, +e.value) }));
 }
 const fv = r => isT() ? mmss(r.ms) : `${+r.val.toFixed(2)} ${unitOf()}`;
 const fa = v => isT() ? mmss(v * 60000) : `${+v.toFixed(2)} ${unitOf()}`;
@@ -367,9 +435,9 @@ function renderLogs() {
   $("fCatWrap").classList.toggle("hidden", !isT());
   $("thCat").textContent = isT() ? "Category" : "Note"; $("thVal").textContent = isT() ? "Duration" : "Value";
   const rows = filtered();
-  $("logRows").innerHTML = rows.length ? rows.map(r => `<tr class="border-t border-slate-800"><td class="p-3 whitespace-nowrap">${fmtDT(r.t)}</td><td class="p-3">${esc(r.who)}</td>` +
+  $("logRows").innerHTML = rows.length ? rows.map(r => `<tr class="border-t border-slate-800"><td class="p-3 whitespace-nowrap">${r.dt || fmtDT(r.t)}</td><td class="p-3">${esc(r.who)}</td>` +
     (isT() ? `<td class="p-3 font-semibold" style="color:${colorOf(r.cat)}">${esc(r.cat)}</td><td class="p-3 tnum font-bold"><span class="inline-flex items-center gap-2">${faceFor(r.cat, r.ms, 26)}${fv(r)}</span></td>`
-           : `<td class="p-3">${esc(r.cat)}</td><td class="p-3 tnum font-bold">${fv(r)}</td>`) +
+           : `<td class="p-3">${esc(r.cat)}</td><td class="p-3 tnum font-bold"><span class="inline-flex items-center gap-2">${r.lvl === null ? "" : rankFace(r.lvl, 26)}${fv(r)}</span></td>`) +
     `<td class="p-3 text-right"><button data-act="delLog" data-id="${r.id}" data-coll="${r.coll}" class="btn-d">Delete</button></td></tr>`).join("")
     : '<tr><td colspan="5" class="p-4 text-slate-400">No records match these filters.</td></tr>';
   $("count").textContent = rows.length ? `${rows.length} records, average ${fa(avg(rows))}` : "";
@@ -382,6 +450,13 @@ $("chips").addEventListener("click", e => {
   const k = e.target.closest("[data-chip]")?.dataset.chip; if (k === undefined) return;
   picked.has(k) ? picked.delete(k) : picked.add(k); renderInsights();
 });
+function stdLine(rows, run, days) { // dashed line at the page's standard
+  const pg = curPage(); if (isT() || !(pg?.std > 0) || !rows.length) return;
+  const ts = rows.map(r => r.t);
+  chart.data.datasets.push({ label: "Standard", borderColor: "#94a3b8", borderDash: [8, 6], borderWidth: 2, pointRadius: 0,
+    data: run ? [{ x: Math.min(...ts), y: pg.std }, { x: Math.max(...ts), y: pg.std }] : days.map(() => pg.std) });
+  chart.update();
+}
 function renderInsights() {
   if (!adminOK || admSub !== "graphs") return;
   const rows = filtered(), names = [...new Set(records().map(r => r.who))].sort(), keys = ["__all", ...names];
@@ -401,6 +476,7 @@ function renderInsights() {
         scales: { y: { beginAtZero: true, title: { display: true, text: isT() ? (run ? "Minutes per run" : "Average minutes") : unitOf(), color: "#cbd5e1" }, ticks: tick, grid },
           x: run ? { type: "linear", ticks: { ...tick, maxTicksLimit: 6, callback: v => new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) }, grid } : { ticks: tick, grid } },
         plugins: { tooltip: { callbacks: { title: it => run ? fmtDT(it[0].parsed.x) : it[0].label } } } } });
+    stdLine(rows, run, days);
   }
   const day = $("dayPick").value;
   $("statRows").innerHTML = series.length ? series.map(s => { const d = s.rows.filter(r => ymd(r.t) === day);
@@ -410,8 +486,9 @@ function renderInsights() {
 
 /* ---------------------------- EXPORT ---------------------------- */
 function say(m, ok = true) { $("exMsg").textContent = m; $("exMsg").className = "text-sm mt-2 " + (ok ? "text-emerald-400" : "text-red-400"); }
-const heads = () => isT() ? ["Date & Time", "Person", "Category", "Duration (MM:SS)"] : ["Date & Time", "Person", "Note", "Value", "Unit"];
-const cells = r => isT() ? [fmtDT(r.t), r.who, r.cat, mmss(r.ms)] : [fmtDT(r.t), r.who, r.cat, +r.val.toFixed(2), unitOf()];
+const rankOn = () => !isT() && curPage()?.std > 0;
+const heads = () => isT() ? ["Date & Time", "Person", "Category", "Duration (MM:SS)"] : ["Date", "Person", "Note", "Value", "Unit", ...(rankOn() ? ["Rank"] : [])];
+const cells = r => isT() ? [fmtDT(r.t), r.who, r.cat, mmss(r.ms)] : [r.dt, r.who, r.cat, +r.val.toFixed(2), unitOf(), ...(rankOn() ? [RANKS[r.lvl]] : [])];
 function htmlTable(rows) {
   const s = "border:1px solid #ccc;padding:6px 10px";
   return `<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:14px"><tr>` + heads().map(h => `<th style="${s};background:#eee;text-align:left">${h}</th>`).join("") + `</tr>` +
@@ -517,12 +594,24 @@ document.querySelectorAll(".ver").forEach(el => el.textContent = VERSION);
     <!-- CUSTOM DATA PAGE (one template, used by every page you create) -->
     <section id="page-data" class="hidden space-y-5 max-w-3xl">
       <h2 id="dataTitle" class="text-2xl font-extrabold"></h2>
-      <div><h3 class="font-bold mb-2">1. Who?</h3><div id="entPick" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div></div>
-      <div class="grid gap-3 sm:grid-cols-[1fr_2fr]">
-        <div><label for="entVal" class="lbl">Value (<span id="entUnit"></span>)</label><input id="entVal" type="number" step="any" inputmode="decimal" class="inp"></div>
-        <div><label for="entNote" class="lbl">Note (optional)</label><input id="entNote" maxlength="60" class="inp"></div>
+      <div class="grid gap-3 sm:grid-cols-[auto_1fr_1fr] items-end bg-slate-900 border border-slate-700 rounded-xl p-3">
+        <div><label for="dMode" class="lbl">Date</label><select id="dMode" class="inp !h-12"><option value="day">Single day</option><option value="range">Date range</option></select></div>
+        <div><label for="dFrom" id="dFromLbl" class="lbl">Day</label><input id="dFrom" type="date" class="inp !h-12"></div>
+        <div id="dToWrap" class="hidden"><label for="dTo" class="lbl">To</label><input id="dTo" type="date" class="inp !h-12"></div>
       </div>
-      <button id="entSave" class="btn btn-w w-full h-20 text-2xl">SAVE ENTRY</button>
+      <div id="ent-quick" class="space-y-5">
+        <div><h3 class="font-bold mb-2">Who?</h3><div id="entPick" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div></div>
+        <div class="grid gap-3 sm:grid-cols-[1fr_2fr]">
+          <div><label for="entVal" class="lbl">Value (<span id="entUnit"></span>)</label><input id="entVal" type="number" step="any" inputmode="decimal" class="inp"></div>
+          <div><label for="entNote" class="lbl">Note (optional)</label><input id="entNote" maxlength="60" class="inp"></div>
+        </div>
+        <button id="entSave" class="btn btn-w w-full h-20 text-2xl">SAVE ENTRY</button>
+      </div>
+      <div id="ent-list" class="hidden space-y-3">
+        <p class="text-sm text-slate-400">Type a value next to each name, then save. Saving again for the same date replaces the earlier value.</p>
+        <ul id="listRows" class="divide-y divide-slate-800 bg-slate-900 border border-slate-700 rounded-xl"></ul>
+        <button id="listSave" class="btn btn-w w-full h-20 text-2xl">SAVE ALL</button>
+      </div>
       <p id="entMsg" class="text-sm min-h-[1.25rem]" role="status"></p>
       <div><h3 class="font-bold mb-1">Latest entries</h3><ul id="entRecent" class="divide-y divide-slate-800"></ul></div>
     </section>
@@ -556,15 +645,16 @@ document.querySelectorAll(".ver").forEach(el => el.textContent = VERSION);
       </div>
       <div id="cp-pages" class="hidden">
         <h2 class="text-xl font-bold mb-1">New pages for data</h2>
-        <p class="text-sm text-slate-400 mb-3">Each page gets its own tab where you pick a person and type in a number, like till speed. It uses the same people, and its data shows up in Admin.</p>
-        <div class="flex flex-wrap gap-2 mb-3">
-          <button data-act="preset" data-name="Till speed" data-unit="items/min" class="btn btn-o">+ Till speed</button>
-          <button data-act="preset" data-name="Bulk items" data-unit="items" class="btn btn-o">+ Bulk items</button>
-        </div>
-        <form id="pageForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_1fr_auto]">
+        <p class="text-sm text-slate-400 mb-3">Each page gets its own tab and uses the same people. Choose a format: <b>Quick entry</b> saves one person at a time, <b>List</b> shows everyone in a row with a box beside each name so you can type in past records for a day or a date range.</p>
+        <p class="text-sm text-slate-400 mb-3">Optional ranking: set a standard and a neutral band. At or above the standard shows a green smiley, just below it (within the band) a yellow neutral face, and further below a red sad face. Leave the standard blank for no faces.</p>
+        <form id="pageForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-2">
           <input id="pageName" required maxlength="30" placeholder="Page name" aria-label="Page name" class="inp">
-          <input id="pageUnit" maxlength="20" placeholder="Unit (e.g. items/min)" aria-label="Unit" class="inp">
-          <button class="btn btn-w">Add page</button>
+          <input id="pageUnit" maxlength="20" placeholder="Unit (optional)" aria-label="Unit" class="inp">
+          <select id="pageFmt" aria-label="Format" class="inp"><option value="quick">Quick entry (one person at a time)</option><option value="list">List (everyone in a row)</option></select>
+          <select id="pageDir" aria-label="Which direction is better" class="inp"><option value="high">Higher is better</option><option value="low">Lower is better</option></select>
+          <input id="pageStd" type="number" step="any" min="0" placeholder="Standard (optional)" aria-label="Standard" class="inp">
+          <input id="pageBand" type="number" step="any" min="0" placeholder="Neutral band below standard (optional)" aria-label="Neutral band" class="inp">
+          <button class="btn btn-w sm:col-span-2">Add page</button>
         </form>
         <ul id="pageRows" class="mt-3 divide-y divide-slate-800"></ul>
       </div>
