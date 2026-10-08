@@ -57,7 +57,7 @@ import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWith
 
 /* ---------------------------- CONFIG ---------------------------- */
 const firebaseConfig = {
-  apiKey:            "AIzaSyCjntFGi3pO77Qv7jxKDF4Ytz7La0FLLLo",
+  apiKey:            "AIzaSyCjntFGi3p077Qv7jxKDF4Ytz7La0FLLLo",
   authDomain:        "loadcheckaldi.firebaseapp.com",
   projectId:         "loadcheckaldi",
   storageBucket:     "loadcheckaldi.firebasestorage.app",
@@ -67,7 +67,7 @@ const firebaseConfig = {
 };
 const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
 const DEFAULT_PIN = "1234"; // used until changed in Admin > Security
-const VERSION = "Beta 0.1";
+const VERSION = "Beta 0.2";
 /* ---------------------------------------------------------------- */
 
 const $ = id => document.getElementById(id);
@@ -102,10 +102,15 @@ const colorOf = n => areaOf(n)?.color || "#94a3b8";
 const curPage = () => pages.find(p => p.id === source);
 const dataPages = () => pages.filter(p => !p.type || p.type === "data");
 const TYPE_LABEL = { data: "Data entry", shift: "Shift plan", notes: "Notepad", checklist: "Daily checklist" };
+// Shift plan boxes are set per page (Customization > New pages); these are the starting ones.
+const DEFAULT_COLS = [{ id: "start", label: "Start", type: "time" }, { id: "end", label: "Finish", type: "time" }, { id: "role", label: "Role", type: "text" }, { id: "brk", label: "Break", type: "time" }];
+const colsOf = pg => Array.isArray(pg?.cols) ? pg.cols : DEFAULT_COLS;
+const homeColOf = pg => { const cs = colsOf(pg); return (pg.homeCol && cs.some(c => c.id === pg.homeCol) ? pg.homeCol : (cs.find(c => c.type === "text") || cs[0])?.id); };
 const num = v => parseFloat(String(v).replace(",", "."));
+const withU = (v, u) => `${v}${u === "%" ? "%" : u ? " " + u : ""}`;
 const dateMs = d => d === ymd(Date.now()) ? Date.now() : new Date(d + "T12:00:00").getTime();
 const entDT = e => e.date ? (e.dateEnd ? `${e.date} to ${e.dateEnd}` : e.date) : fmtDT(e.endMs);
-// Page ranking: 2 = at/above standard (green smiley), 1 = just below, within the neutral band (yellow), 0 = further below (red sad)
+// Page ranking: 2 = at/above standard (green smiley), 1 = just below, within the deviation (yellow), 0 = further below (red sad)
 const RANKS = ["Below standard", "Just below standard", "At or above standard"];
 function rankOf(pg, v) {
   if (!pg || !(pg.std > 0) || !Number.isFinite(v)) return null;
@@ -260,6 +265,10 @@ document.addEventListener("click", async e => {
     renderSheets();
   }
   else if (act === "shAuto") await updateDoc(doc(db, "stores", storeId), { [`sheets.${source}.auto`]: t.checked });
+  else if (act === "addPreset") { const pg = pgNow(); if (pg) await addDoc(col("items"), { kind: "preset", pageId: pg.id, name: "New preset", day: "", ts: Date.now() }); }
+  else if (act === "applyPreset") { if (selPreset) { applyPreset(id, selPreset); selPreset = null; renderShift(); } }
+  else if (act === "addCol") { const pg = pages.find(x => x.id === id); await updateDoc(ref("pages", id), { cols: [...colsOf(pg), { id: "c_" + Math.random().toString(36).slice(2, 7), label: "New box", type: "text" }] }); }
+  else if (act === "delCol") { const pg = pages.find(x => x.id === id); if (confirm("Remove this box?")) await updateDoc(ref("pages", id), { cols: colsOf(pg).filter(c => c.id !== t.dataset.cid) }); }
   else if (act === "toggleTask") { const it = items.find(x => x.id === id); await updateDoc(ref("items", id), { done: !it.done }); }
   else if (act === "delItem") { if (!t.dataset.ask || confirm("Delete this note?")) await deleteDoc(ref("items", id)); }
   else if (act === "delLog") { if (confirm("Delete this record?")) await deleteDoc(ref(t.dataset.coll, id)); }
@@ -270,9 +279,16 @@ function renderHome() {
   const busy = new Set(timers.map(t => t.staffId));
   if (selPerson && (busy.has(selPerson) || !people.some(s => s.id === selPerson))) selPerson = null;
   if (selCat && !cats.some(a => a.name === selCat)) selCat = null;
-  $("personPick").innerHTML = people.length ? people.map(s => { const b = busy.has(s.id);
-    return `<button data-act="pickPerson" data-id="${s.id}" ${b ? "disabled" : ""} style="--c:#fff" class="pick ${s.id === selPerson ? "sel" : ""} ${b ? "opacity-40" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${esc(full(s))}${b ? '<div class="text-xs font-medium">Timer running</div>' : ""}</button>`; }).join("")
-    : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
+  const link = pages.find(p => p.type === "shift" && p.homeLink);
+  let list = people, roleOf = () => "";
+  if (link) { // linked shift plan: only people on today's roster, with their chosen box shown small above the name
+    const cid = homeColOf(link), ros = new Map(items.filter(i => i.kind === "shift" && i.pageId === link.id && i.day === today()).map(i => [i.personId, i]));
+    list = people.filter(s => ros.has(s.id)); roleOf = s => cid ? String(ros.get(s.id)?.[cid] ?? "") : "";
+  }
+  if (selPerson && !list.some(s => s.id === selPerson)) selPerson = null;
+  $("personPick").innerHTML = list.length ? list.map(s => { const b = busy.has(s.id), role = roleOf(s);
+    return `<button data-act="pickPerson" data-id="${s.id}" ${b ? "disabled" : ""} style="--c:#fff" class="pick ${s.id === selPerson ? "sel" : ""} ${b ? "opacity-40" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${role ? `<div class="text-xs font-medium opacity-80">${esc(role)}</div>` : ""}${esc(full(s))}${b ? '<div class="text-xs font-medium">Timer running</div>' : ""}</button>`; }).join("")
+    : link ? `<p class="text-slate-400 col-span-full">Nobody is on today's roster yet. Add people on the ${esc(link.name)} page.</p>` : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
   $("catPick").innerHTML = cats.length ? cats.map(a =>
     `<button data-act="pickCat" data-id="${esc(a.name)}" style="--c:${esc(a.color)}" class="area ${a.name === selCat ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${esc(a.name)}${a.threshold ? `<div class="text-sm font-medium opacity-80">${a.threshold} min</div>` : ""}</button>`).join("")
     : '<p class="text-slate-400 col-span-full">No categories yet. Add some in Customization.</p>';
@@ -332,7 +348,7 @@ function renderData() {
       : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
   }
   const rec = entries.filter(e => e.pageId === pg.id).slice(0, 8);
-  $("entRecent").innerHTML = rec.length ? rec.map(e => `<li class="py-2 flex items-center justify-between gap-2"><span class="flex items-center gap-2">${rf(pg, +e.value, 28)}<span>${esc(shortName(e.staffName))} <span class="text-slate-400">${esc(e.note || "")}</span></span></span><span class="tnum font-semibold text-right">${+e.value} ${esc(e.unit || "")} <span class="block text-slate-500 text-xs font-normal">${esc(entDT(e))}</span></span></li>`).join("") : '<li class="py-2 text-slate-400">Nothing saved yet.</li>';
+  $("entRecent").innerHTML = rec.length ? rec.map(e => `<li class="py-2 flex items-center justify-between gap-2"><span class="flex items-center gap-2">${rf(pg, +e.value, 28)}<span>${esc(shortName(e.staffName))} <span class="text-slate-400">${esc(e.note || "")}</span></span></span><span class="tnum font-semibold text-right">${esc(withU(+e.value, e.unit || ""))} <span class="block text-slate-500 text-xs font-normal">${esc(entDT(e))}</span></span></li>`).join("") : '<li class="py-2 text-slate-400">Nothing saved yet.</li>';
 }
 $("listRows").addEventListener("input", e => {
   const id = e.target.dataset.lid; if (!id) return;
@@ -378,12 +394,21 @@ $("pageForm").addEventListener("submit", async e => {
   const name = $("pageName").value.trim(), type = $("pageType").value; if (!name) return;
   if (pages.some(p => p.name.toLowerCase() === name.toLowerCase())) return alert("That page already exists.");
   const d = { name, type };
-  if (type === "data") Object.assign(d, { unit: $("pageUnit").value.trim(), format: $("pageFmt").value, dir: $("pageDir").value, std: Math.max(0, num($("pageStd").value) || 0), band: Math.max(0, num($("pageBand").value) || 0) });
+  if (type === "data") { const pct = $("pageVal").value === "pct"; Object.assign(d, { vtype: pct ? "pct" : "num", unit: pct ? "%" : $("pageUnit").value.trim(), format: $("pageFmt").value, dir: $("pageDir").value, std: Math.max(0, num($("pageStd").value) || 0), band: Math.max(0, num($("pageBand").value) || 0) }); }
+  if (type === "shift") Object.assign(d, { cols: DEFAULT_COLS, homeLink: false });
   await addDoc(col("pages"), d); e.target.reset(); syncPageForm(); $("pageName").focus();
 });
 $("pageRows").addEventListener("change", async e => {
-  const { pid, f } = e.target.dataset; if (!pid) return;
-  await updateDoc(ref("pages", pid), { [f]: f === "std" || f === "band" ? Math.max(0, num(e.target.value) || 0) : e.target.value });
+  const { pid, f, cid } = e.target.dataset; if (!pid) return;
+  const pg = pages.find(p => p.id === pid), v = e.target.value;
+  if (cid) return updateDoc(ref("pages", pid), { cols: colsOf(pg).map(c => c.id === cid ? { ...c, [f]: v } : c) }); // shift plan box: name or kind
+  if (f === "name") {
+    const nm = v.trim();
+    if (!nm || pages.some(p => p.id !== pid && p.name.toLowerCase() === nm.toLowerCase())) { alert(nm ? "That page already exists." : "A page needs a name."); e.target.value = pg.name; return; }
+    return updateDoc(ref("pages", pid), { name: nm });
+  }
+  if (f === "vtype") return updateDoc(ref("pages", pid), { vtype: v, unit: v === "pct" ? "%" : (pg.unit === "%" ? "" : pg.unit || "") });
+  await updateDoc(ref("pages", pid), { [f]: f === "std" || f === "band" ? Math.max(0, num(v) || 0) : v });
 });
 $("catRows").addEventListener("change", async e => {
   const { aid, f } = e.target.dataset; if (!aid) return;
@@ -392,16 +417,25 @@ $("catRows").addEventListener("change", async e => {
 function renderCustom() {
   $("personRows").innerHTML = people.length ? people.map(s => `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span><button data-act="delPerson" data-id="${s.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No people yet.</li>';
   if (!($("pageRows").contains(document.activeElement) && document.activeElement.matches("input,select"))) // don't wipe a field being edited
-    $("pageRows").innerHTML = pages.length ? pages.map(p => { const d = `data-pid="${p.id}"`, f = "inp !h-11 !text-base";
-      if (p.type && p.type !== "data") return `<li class="flex items-center justify-between py-3"><span class="text-lg"><b>${esc(p.name)}</b> <span class="text-slate-400">${TYPE_LABEL[p.type] || ""}</span></span><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></li>`;
-      return `<li class="py-3 space-y-2"><div class="flex items-center justify-between gap-2"><b class="text-lg">${esc(p.name)}</b><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></div>
-      <div class="grid gap-2 grid-cols-2 sm:grid-cols-5 text-sm text-slate-400">
-        <label>Unit<input ${d} data-f="unit" maxlength="20" value="${esc(p.unit || "")}" class="${f}"></label>
-        <label>Format<select ${d} data-f="format" class="${f}"><option value="quick" ${p.format !== "list" ? "selected" : ""}>Quick entry</option><option value="list" ${p.format === "list" ? "selected" : ""}>List</option></select></label>
+    $("pageRows").innerHTML = pages.length ? pages.map(p => {
+      const d = `data-pid="${p.id}"`, f = "inp !h-11 !text-base", t = p.type || "data", sel = (a, b) => a === b ? "selected" : "";
+      const head = `<div class="flex items-center gap-2"><input ${d} data-f="name" maxlength="30" value="${esc(p.name)}" aria-label="Page name" class="${f} !font-bold grow"><span class="text-sm text-slate-400 shrink-0">${TYPE_LABEL[t] || ""}</span><button data-act="delPage" data-id="${p.id}" class="btn-d">Delete</button></div>`;
+      let body = "";
+      if (t === "data") { const pct = p.vtype === "pct";
+        body = `<div class="grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 text-sm text-slate-400">
+        <label>Value type<select ${d} data-f="vtype" class="${f}"><option value="num" ${sel(pct, false)}>Number</option><option value="pct" ${sel(pct, true)}>Percentage (%)</option></select></label>
+        <label>Unit<input ${d} data-f="unit" maxlength="20" value="${esc(pct ? "%" : p.unit || "")}" ${pct ? "disabled" : ""} class="${f}"></label>
+        <label>Format<select ${d} data-f="format" class="${f}"><option value="quick" ${sel(p.format === "list", false)}>Quick entry</option><option value="list" ${sel(p.format === "list", true)}>List</option></select></label>
         <label>Standard<input ${d} data-f="std" type="number" step="any" min="0" value="${p.std || ""}" placeholder="off" class="${f}"></label>
-        <label>Neutral band<input ${d} data-f="band" type="number" step="any" min="0" value="${p.band || ""}" placeholder="0" class="${f}"></label>
-        <label>Better when<select ${d} data-f="dir" class="${f}"><option value="high" ${p.dir !== "low" ? "selected" : ""}>Higher</option><option value="low" ${p.dir === "low" ? "selected" : ""}>Lower</option></select></label>
-      </div></li>`; }).join("") : '<li class="py-3 text-slate-400">No extra pages yet.</li>';
+        <label>Deviation<input ${d} data-f="band" type="number" step="any" min="0" value="${p.band || ""}" placeholder="0" class="${f}"></label>
+        <label>Better when<select ${d} data-f="dir" class="${f}"><option value="high" ${sel(p.dir === "low", false)}>Higher</option><option value="low" ${sel(p.dir === "low", true)}>Lower</option></select></label></div>`;
+      } else if (t === "shift") {
+        body = `<div class="space-y-2"><div class="text-sm text-slate-400">Boxes on each person's roster line. Clock gives a time picker.</div>` + colsOf(p).map(c => `<div class="flex items-center gap-2">
+          <input ${d} data-cid="${c.id}" data-f="label" maxlength="20" value="${esc(c.label)}" aria-label="Box name" class="${f} grow">
+          <select ${d} data-cid="${c.id}" data-f="type" aria-label="Box kind" class="${f} !w-auto"><option value="time" ${sel(c.type, "time")}>Clock</option><option value="number" ${sel(c.type, "number")}>Number</option><option value="text" ${sel(c.type, "text")}>Text</option></select>
+          <button data-act="delCol" data-id="${p.id}" data-cid="${c.id}" class="btn-d !px-3" aria-label="Remove box">&#10005;</button></div>`).join("") + `<button data-act="addCol" data-id="${p.id}" class="btn btn-o !h-11">+ Add box</button></div>`;
+      }
+      return `<li class="py-3 space-y-2">${head}${body}</li>`; }).join("") : '<li class="py-3 text-slate-400">No extra pages yet.</li>';
   if ($("catRows").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return; // don't wipe a field being edited
   $("catRows").innerHTML = cats.length ? cats.map(a => `<li class="flex flex-wrap items-center gap-3 py-3">
     <input type="color" value="${esc(a.color)}" data-aid="${a.id}" data-f="color" aria-label="Colour for ${esc(a.name)}" class="w-14 h-12 rounded bg-transparent">
@@ -418,42 +452,73 @@ function purgeOld() { // shift plans and tasks only live for the day they were m
 }
 setInterval(() => { purgeOld(); renderShift(); renderChecks(); }, 60000);
 
+let selPreset = null;
 async function addShift(personId) {
   const pg = pgNow(), p = people.find(x => x.id === personId); if (!pg || !p) return;
   const id = `${pg.id}_${p.id}_${today()}`; if (items.some(i => i.id === id)) return;
-  await setDoc(ref("items", id), { kind: "shift", pageId: pg.id, personId: p.id, name: full(p), label: "", start: "", end: "", bs: "", be: "", day: today(), ts: Date.now() });
+  await setDoc(ref("items", id), { kind: "shift", pageId: pg.id, personId: p.id, name: full(p), day: today(), ts: Date.now() });
+}
+function applyPreset(itemId, presetId) { // copy the preset's filled-in boxes onto a roster person
+  const pr = items.find(i => i.id === presetId), pg = pgNow(); if (!pr || !pg) return;
+  const v = {}; colsOf(pg).forEach(c => { if (pr[c.id] !== undefined && pr[c.id] !== "") v[c.id] = pr[c.id]; });
+  if (Object.keys(v).length) updateDoc(ref("items", itemId), v);
 }
 function renderShift() {
   if (page !== "shift") return;
   const pg = pgNow(); if (!pg) return showPage("home");
+  const cols = colsOf(pg), n = cols.length;
   const roster = items.filter(i => i.kind === "shift" && i.pageId === pg.id && i.day === today()).sort((a, b) => a.ts - b.ts), on = new Set(roster.map(i => i.personId));
   $("shiftTitle").textContent = pg.name; $("shiftDay").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+  $("homeLink").checked = !!pg.homeLink;
+  if (document.activeElement !== $("homeCol")) { const cur = homeColOf(pg); $("homeCol").innerHTML = cols.map(c => `<option value="${c.id}" ${c.id === cur ? "selected" : ""}>${esc(c.label)}</option>`).join(""); }
   $("shiftPeople").innerHTML = people.filter(s => !on.has(s.id)).map(s => `<div data-drag="${s.id}" style="touch-action:none;user-select:none;--c:#fff" class="pick rounded-xl px-4 py-3 text-lg font-bold cursor-grab">${esc(full(s))}</div>`).join("")
     || '<p class="text-sm text-slate-400">Everyone is on the roster.</p>';
-  if ($("shiftDrop").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return; // don't wipe a field being edited
-  const f = (i, k, label, type) => `<label>${label}<input type="${type}" data-iid="${i.id}" data-f="${k}" value="${esc(i[k] || "")}" class="inp !h-11 !text-base"></label>`;
-  $("shiftDrop").innerHTML = roster.length ? roster.map(i => `<div class="rounded-lg bg-slate-900 border border-slate-700 p-3 space-y-2">
-    <div class="flex items-center justify-between gap-2"><b class="text-lg">${esc(shortName(i.name))}</b><button data-act="delItem" data-id="${i.id}" class="btn-d">Remove</button></div>
-    <div class="grid gap-2 grid-cols-2 sm:grid-cols-5 text-sm text-slate-400">${f(i, "label", "Shift", "text")}${f(i, "start", "Start", "time")}${f(i, "end", "End", "time")}${f(i, "bs", "Break from", "time")}${f(i, "be", "Break to", "time")}</div></div>`).join("")
+  if ([$("shiftDrop"), $("presetRows")].some(el => el.contains(document.activeElement) && document.activeElement.tagName === "INPUT")) return; // don't wipe a box being typed in
+  const w = `min-width:${(14 + 7 * n).toFixed(1)}rem`, grid = `grid-template-columns:8rem repeat(${n},minmax(6.5rem,1fr)) 5.5rem;${w}`, pgrid = `grid-template-columns:7rem 8rem repeat(${n},minmax(6.5rem,1fr)) 5.5rem;min-width:${(22 + 7 * n).toFixed(1)}rem`;
+  const box = (c, attrs, val) => `<input ${attrs} data-f="${c.id}" type="${c.type}" ${c.type === "number" ? 'step="any" inputmode="decimal"' : ""} value="${esc(val ?? "")}" aria-label="${esc(c.label)}" class="inp !h-11 !text-base !px-2">`;
+  const labels = cols.map(c => `<span class="truncate">${esc(c.label)}</span>`).join("");
+  $("shiftDrop").innerHTML = roster.length ? `<div class="grid gap-2 text-xs text-slate-400 px-2" style="${grid}"><span>Person</span>${labels}<span></span></div>` +
+    roster.map(i => `<div data-roster="${i.id}" class="grid gap-2 items-center rounded-lg bg-slate-900 border border-slate-700 p-2" style="${grid}"><button data-act="applyPreset" data-id="${i.id}" class="text-left font-bold truncate">${esc(shortName(i.name))}</button>${cols.map(c => box(c, `data-iid="${i.id}"`, i[c.id])).join("")}<button data-act="delItem" data-id="${i.id}" class="btn-d !h-11 !px-2 !text-sm">Remove</button></div>`).join("")
     : '<p class="text-slate-400 p-6 text-center">Drag people here</p>';
+  const presets = items.filter(i => i.kind === "preset" && i.pageId === pg.id).sort((a, b) => a.ts - b.ts);
+  $("presetRows").innerHTML = presets.length ? `<div class="grid gap-2 text-xs text-slate-400 px-2" style="${pgrid}"><span>Drag me</span><span>Name</span>${labels}<span></span></div>` +
+    presets.map(p => `<div class="grid gap-2 items-center rounded-lg bg-slate-900 border border-slate-700 p-2" style="${pgrid}"><div data-preset="${p.id}" style="touch-action:none;user-select:none;--c:#14b8a6" class="pick ${p.id === selPreset ? "sel" : ""} rounded-lg px-2 py-2 text-sm font-bold truncate cursor-grab">${esc(p.name || "Preset")}</div>
+      <input data-pid="${p.id}" data-f="name" maxlength="20" value="${esc(p.name || "")}" aria-label="Preset name" class="inp !h-11 !text-base !px-2">${cols.map(c => box(c, `data-pid="${p.id}"`, p[c.id])).join("")}<button data-act="delItem" data-id="${p.id}" class="btn-d !h-11 !px-2 !text-sm">Delete</button></div>`).join("")
+    : '<p class="text-slate-400">No presets yet. Tap "+ Add preset".</p>';
 }
 $("shiftDrop").addEventListener("change", e => { const { iid, f } = e.target.dataset; if (iid) updateDoc(ref("items", iid), { [f]: e.target.value }); });
+$("presetRows").addEventListener("change", e => { const { pid, f } = e.target.dataset; if (pid) updateDoc(ref("items", pid), { [f]: e.target.value }); });
+$("homeLink").addEventListener("change", async e => {
+  const pg = pgNow(); if (!pg) return;
+  if (e.target.checked) pages.filter(p => p.type === "shift" && p.homeLink && p.id !== pg.id).forEach(p => updateDoc(ref("pages", p.id), { homeLink: false })); // only one plan drives Home
+  await updateDoc(ref("pages", pg.id), { homeLink: e.target.checked });
+});
+$("homeCol").addEventListener("change", e => { const pg = pgNow(); if (pg) updateDoc(ref("pages", pg.id), { homeCol: e.target.value }); });
 
-// Drag with pointer events so it works with a finger as well as a mouse; a plain tap also adds the person.
+// Drag with pointer events so it works with a finger as well as a mouse.
+// A person dropped on the roster is added (a tap also adds them). A preset dropped on a roster line fills that person's boxes (a tap selects it).
 let drag = null;
-document.addEventListener("pointerdown", e => { const c = e.target.closest("[data-drag]"); if (c) drag = { id: c.dataset.drag, x: e.clientX, y: e.clientY, ghost: null, label: c.textContent }; });
+document.addEventListener("pointerdown", e => { const c = e.target.closest("[data-drag],[data-preset]"); if (c) drag = { person: c.dataset.drag, preset: c.dataset.preset, x: e.clientX, y: e.clientY, ghost: null, label: c.textContent.trim() }; });
 document.addEventListener("pointermove", e => {
   if (!drag) return;
   if (!drag.ghost && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 8) {
     drag.ghost = Object.assign(document.createElement("div"), { textContent: drag.label, className: "pick sel rounded-xl px-4 py-3 text-lg font-bold" });
     drag.ghost.style.cssText = "position:fixed;z-index:50;pointer-events:none;--c:#14b8a6;transform:translate(-50%,-50%)"; document.body.appendChild(drag.ghost);
   }
-  if (drag.ghost) { drag.ghost.style.left = e.clientX + "px"; drag.ghost.style.top = e.clientY + "px"; $("shiftDrop").classList.toggle("border-white", !!document.elementFromPoint(e.clientX, e.clientY)?.closest("#shiftDrop")); }
+  if (!drag.ghost) return;
+  drag.ghost.style.left = e.clientX + "px"; drag.ghost.style.top = e.clientY + "px";
+  document.querySelectorAll("[data-roster]").forEach(r => r.classList.remove("ring-2", "ring-white"));
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  if (drag.preset) el?.closest("[data-roster]")?.classList.add("ring-2", "ring-white"); else $("shiftDrop").classList.toggle("border-white", !!el?.closest("#shiftDrop"));
 });
 function endDrag(e, ok) {
-  if (!drag) return; const d = drag; drag = null; d.ghost?.remove(); $("shiftDrop").classList.remove("border-white");
+  if (!drag) return; const d = drag; drag = null; d.ghost?.remove();
+  $("shiftDrop").classList.remove("border-white"); document.querySelectorAll("[data-roster]").forEach(r => r.classList.remove("ring-2", "ring-white"));
   if (!ok) return;
-  if (!d.ghost || document.elementFromPoint(e.clientX, e.clientY)?.closest("#shiftDrop")) addShift(d.id);
+  const el = d.ghost ? document.elementFromPoint(e.clientX, e.clientY) : null;
+  if (d.person) { if (!d.ghost || el?.closest("#shiftDrop")) addShift(d.person); }
+  else if (d.ghost) { const r = el?.closest("[data-roster]"); if (r) applyPreset(r.dataset.roster, d.preset); }
+  else { selPreset = selPreset === d.preset ? null : d.preset; renderShift(); }
 }
 document.addEventListener("pointerup", e => endDrag(e, true));
 document.addEventListener("pointercancel", e => endDrag(e, false));
@@ -514,8 +579,8 @@ function records(key = source) { // one common shape for timer runs and custom-p
   return key === "timers" ? logs.map(l => ({ id: l.id, coll: "logs", who: l.staffName, cat: l.area, ms: l.ms, val: l.ms / 60000, t: l.endMs }))
     : entries.filter(e => e.pageId === key).map(e => ({ id: e.id, coll: "entries", who: shortName(e.staffName), cat: e.note || "", val: +e.value, t: e.endMs, dt: entDT(e), lvl: rankOf(pg, +e.value) }));
 }
-const fv = r => isT() ? mmss(r.ms) : `${+r.val.toFixed(2)} ${unitOf()}`;
-const fa = v => isT() ? mmss(v * 60000) : `${+v.toFixed(2)} ${unitOf()}`;
+const fv = r => isT() ? mmss(r.ms) : `${withU(+r.val.toFixed(2), unitOf())}`;
+const fa = v => isT() ? mmss(v * 60000) : withU(+v.toFixed(2), unitOf());
 const avg = a => a.length ? a.reduce((n, r) => n + r.val, 0) / a.length : 0;
 function filtered() {
   const f = $("fFrom").value, t = $("fTo").value, p = $("fPerson").value, c = isT() ? $("fCat").value : "";
@@ -813,12 +878,20 @@ else onAuthStateChanged(auth, user => {
     </section>
 
     <!-- SHIFT PLAN PAGE -->
-    <section id="page-shift" class="hidden space-y-4 max-w-4xl">
+    <section id="page-shift" class="hidden space-y-4 max-w-5xl">
       <div class="flex flex-wrap items-end justify-between gap-2"><h2 id="shiftTitle" class="text-2xl font-extrabold"></h2><span id="shiftDay" class="text-sm text-slate-400"></span></div>
-      <p class="text-sm text-slate-400">Drag people into the roster (or just tap a name). Then set each person's shift and break times. The plan clears itself the next day.</p>
-      <div class="grid gap-4 md:grid-cols-[14rem_1fr]">
-        <div><h3 class="font-bold mb-2">People</h3><div id="shiftPeople" class="flex flex-wrap md:flex-col gap-2"></div></div>
-        <div><h3 class="font-bold mb-2">Today's roster</h3><div id="shiftDrop" class="min-h-[8rem] rounded-xl border-2 border-dashed border-slate-600 p-2 space-y-2"></div></div>
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-2 bg-slate-900 border border-slate-700 rounded-xl p-3">
+        <label class="inline-flex items-center gap-2 font-semibold"><input id="homeLink" type="checkbox" class="w-6 h-6 accent-emerald-500"> Show on Home page</label>
+        <label class="inline-flex items-center gap-2 text-sm text-slate-300">Small text above names: <select id="homeCol" class="inp !h-11 !w-auto !text-base"></select></label>
+        <span class="text-sm text-slate-400">When on, Home only lists people on today's roster.</span>
+      </div>
+      <p class="text-sm text-slate-400">Drag people into the roster (or tap a name), then fill in the boxes on their line. The roster clears itself the next day. Add or rename boxes in Customization.</p>
+      <div><h3 class="font-bold mb-2">People</h3><div id="shiftPeople" class="flex flex-wrap gap-2"></div></div>
+      <div><h3 class="font-bold mb-2">Today's roster</h3><div id="shiftDrop" class="overflow-x-auto min-h-[8rem] rounded-xl border-2 border-dashed border-slate-600 p-2 space-y-2"></div></div>
+      <div>
+        <div class="flex items-center justify-between mb-1"><h3 class="font-bold">Shift presets</h3><button data-act="addPreset" class="btn btn-o !h-11">+ Add preset</button></div>
+        <p class="text-sm text-slate-400 mb-2">Fill in a preset, then drag it onto a person in the roster to copy its times across. Or tap the preset, then tap the person's name. Presets stay until you delete them.</p>
+        <div id="presetRows" class="overflow-x-auto space-y-2"></div>
       </div>
     </section>
 
@@ -876,17 +949,18 @@ else onAuthStateChanged(auth, user => {
         <form id="pageForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-2">
           <select id="pageType" aria-label="Page type" class="inp sm:col-span-2">
             <option value="data">Data entry: numbers per person, optional ranking faces</option>
-            <option value="shift">Shift plan: drag people in, set shifts and breaks (clears daily)</option>
+            <option value="shift">Shift plan: roster with boxes you choose, presets, link to Home (clears daily)</option>
             <option value="notes">Notepad: blog-style entries</option>
             <option value="checklist">Daily checklist: tick off tasks (clears daily)</option>
           </select>
           <input id="pageName" required maxlength="30" placeholder="Page name" aria-label="Page name" class="inp sm:col-span-2">
-          <p data-only class="sm:col-span-2 text-sm text-slate-400">Data entry formats: <b>Quick entry</b> saves one person at a time. <b>List</b> shows everyone in a row with a box beside each name, for typing in past records by day or date range. Optional ranking: at or above the standard shows a green smiley, just below it (within the neutral band) a yellow neutral face, further below a red sad face.</p>
+          <p data-only class="sm:col-span-2 text-sm text-slate-400">Data entry formats: <b>Quick entry</b> saves one person at a time. <b>List</b> shows everyone in a row with a box beside each name, for typing in past records by day or date range. Optional ranking: at or above the standard shows a green smiley, just below it (within the deviation) a yellow neutral face, further below a red sad face.</p>
+          <select data-only id="pageVal" aria-label="Value type" class="inp"><option value="num">Value type: Number</option><option value="pct">Value type: Percentage (%)</option></select>
           <input data-only id="pageUnit" maxlength="20" placeholder="Unit (optional)" aria-label="Unit" class="inp">
           <select data-only id="pageFmt" aria-label="Format" class="inp"><option value="quick">Quick entry (one person at a time)</option><option value="list">List (everyone in a row)</option></select>
           <select data-only id="pageDir" aria-label="Which direction is better" class="inp"><option value="high">Higher is better</option><option value="low">Lower is better</option></select>
           <input data-only id="pageStd" type="number" step="any" min="0" placeholder="Standard (optional)" aria-label="Standard" class="inp">
-          <input data-only id="pageBand" type="number" step="any" min="0" placeholder="Neutral band below standard (optional)" aria-label="Neutral band" class="inp sm:col-span-2">
+          <input data-only id="pageBand" type="number" step="any" min="0" placeholder="Deviation below standard (optional)" aria-label="Deviation" class="inp sm:col-span-2">
           <button class="btn btn-w sm:col-span-2">Add page</button>
         </form>
         <ul id="pageRows" class="mt-3 divide-y divide-slate-800"></ul>
