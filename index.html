@@ -57,13 +57,13 @@ import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWith
 
 /* ---------------------------- CONFIG ---------------------------- */
 const firebaseConfig = {
-  apiKey: "AIzaSyCjntFGi3pO77Qv7jxKDF4Ytz7La0FLLLo",
-  authDomain: "loadcheckaldi.firebaseapp.com",
-  projectId: "loadcheckaldi",
-  storageBucket: "loadcheckaldi.firebasestorage.app",
+  apiKey:            "AIzaSyCjntFGi3pO77Qv7jxKDF4Ytz7La0FLLLo",
+  authDomain:        "loadcheckaldi.firebaseapp.com",
+  projectId:         "loadcheckaldi",
+  storageBucket:     "loadcheckaldi.firebasestorage.app",
   messagingSenderId: "1085146750070",
-  appId: "1:1085146750070:web:40446f2507363efe191357",
-  measurementId: "G-9ZSBFE5ZKG"
+  appId:             "1:1085146750070:web:40446f2507363efe191357",
+  measurementId:     "G-9ZSBFE5ZKG"
 };
 const EMAILJS_CONFIG = { service_id: "YOUR_SERVICE_ID", template_id: "YOUR_TEMPLATE_ID", public_key: "YOUR_PUBLIC_KEY" };
 const DEFAULT_PIN = "1234"; // used until changed in Admin > Security
@@ -117,22 +117,20 @@ function rankOf(pg, v) {
   const d = (pg.dir || "high") === "high" ? v - pg.std : pg.std - v;
   return d >= 0 ? 2 : d >= -(pg.band || 0) ? 1 : 0;
 }
-function rankFace(l, size) {
+function rankFace(l, size, labels = RANKS) {
   const fill = ["#ef4444", "#facc15", "#22c55e"][l], mouth = ["M19 49Q32 37 45 49", "M20 46H44", "M19 43Q32 56 45 43"][l];
-  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" role="img" aria-label="${RANKS[l]}"><title>${RANKS[l]}</title><circle cx="32" cy="32" r="29" fill="${fill}" stroke="#0f172a" stroke-width="2"/><circle cx="23" cy="26" r="3.2" fill="#0f172a"/><circle cx="41" cy="26" r="3.2" fill="#0f172a"/><path d="${mouth}" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/></svg>`;
+  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" role="img" aria-label="${labels[l]}"><title>${labels[l]}</title><circle cx="32" cy="32" r="29" fill="${fill}" stroke="#0f172a" stroke-width="2"/><circle cx="23" cy="26" r="3.2" fill="#0f172a"/><circle cx="41" cy="26" r="3.2" fill="#0f172a"/><path d="${mouth}" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/></svg>`;
 }
 const rf = (pg, v, size) => { const l = rankOf(pg, v); return l === null ? "" : rankFace(l, size); };
 
-// Mood face: t = 0 happy ... 1 crying. Happy until the category's threshold, crying 10 minutes after it.
-function faceSVG(t, size) {
-  const fill = `hsl(${Math.round(55 * (1 - t))} 90% 55%)`;
-  const tear = t > 0.6 ? 3 + 9 * (t - 0.6) / 0.4 : 0;
-  const tears = tear ? `<ellipse cx="23" cy="${32 + tear / 2}" rx="2.6" ry="${tear}" fill="#38bdf8"/><ellipse cx="41" cy="${32 + tear / 2}" rx="2.6" ry="${tear}" fill="#38bdf8"/>` : "";
-  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" role="img" aria-label="Mood"><circle cx="32" cy="32" r="29" fill="${fill}" stroke="#0f172a" stroke-width="2"/>${tears}<circle cx="23" cy="26" r="3.2" fill="#0f172a"/><circle cx="41" cy="26" r="3.2" fill="#0f172a"/><path d="M19 45Q32 ${(57 - 26 * t).toFixed(1)} 45 45" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/></svg>`;
-}
+// Timer faces use the same three faces as the data pages: green = within the threshold, yellow = past it, red = past the upper limit.
+// Upper limit is set per category (Customization). If it is blank it defaults to threshold + 10 minutes.
+const TLABELS = ["Over the upper limit", "Over the threshold", "Within the threshold"];
+const limitOf = a => a?.limit > a?.threshold ? a.limit : (a?.threshold || 0) + 10;
 function faceFor(catName, ms, size) {
-  const th = areaOf(catName)?.threshold;
-  return th > 0 ? faceSVG(clamp((ms / 60000 - th) / 10, 0, 1), size) : "";
+  const a = areaOf(catName), th = a?.threshold; if (!(th > 0)) return "";
+  const m = ms / 60000;
+  return rankFace(m < th ? 2 : m < limitOf(a) ? 1 : 0, size, TLABELS);
 }
 
 /* ---------------------------- SIGN IN / REGISTER ---------------------------- */
@@ -271,6 +269,10 @@ document.addEventListener("click", async e => {
   else if (act === "delCol") { const pg = pages.find(x => x.id === id); if (confirm("Remove this box?")) await updateDoc(ref("pages", id), { cols: colsOf(pg).filter(c => c.id !== t.dataset.cid) }); }
   else if (act === "toggleTask") { const it = items.find(x => x.id === id); await updateDoc(ref("items", id), { done: !it.done }); }
   else if (act === "delItem") { if (!t.dataset.ask || confirm("Delete this note?")) await deleteDoc(ref("items", id)); }
+  else if (act === "brk") { const it = items.find(x => x.id === id); if (it) await updateDoc(ref("items", id), { brkAt: it.brkAt ? null : Date.now() }); }
+  else if (act === "mgr") { const it = items.find(x => x.id === id); if (it) await updateDoc(ref("items", id), { mgr: !it.mgr }); }
+  else if (act === "qa") { const ta = $("qaText"), v = ta.value, ins = t.dataset.ins;
+    ta.value = t.dataset.kind === "p" ? (v && !/\n$/.test(v) ? v + "\n" : v) + ins + " " : v + (v && !/\s$/.test(v) ? " " : "") + ins + " "; }
   else if (act === "delLog") { if (confirm("Delete this record?")) await deleteDoc(ref(t.dataset.coll, id)); }
 });
 
@@ -290,7 +292,7 @@ function renderHome() {
     return `<button data-act="pickPerson" data-id="${s.id}" ${b ? "disabled" : ""} style="--c:#fff" class="pick ${s.id === selPerson ? "sel" : ""} ${b ? "opacity-40" : ""} min-h-[5rem] rounded-xl px-3 text-lg font-bold">${role ? `<div class="text-xs font-medium opacity-80">${esc(role)}</div>` : ""}${esc(full(s))}${b ? '<div class="text-xs font-medium">Timer running</div>' : ""}</button>`; }).join("")
     : link ? `<p class="text-slate-400 col-span-full">Nobody is on today's roster yet. Add people on the ${esc(link.name)} page.</p>` : '<p class="text-slate-400 col-span-full">No people yet. Add some in Customization.</p>';
   $("catPick").innerHTML = cats.length ? cats.map(a =>
-    `<button data-act="pickCat" data-id="${esc(a.name)}" style="--c:${esc(a.color)}" class="area ${a.name === selCat ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${esc(a.name)}${a.threshold ? `<div class="text-sm font-medium opacity-80">${a.threshold} min</div>` : ""}</button>`).join("")
+    `<button data-act="pickCat" data-id="${esc(a.name)}" style="--c:${esc(a.color)}" class="area ${a.name === selCat ? "sel" : ""} h-28 rounded-xl text-2xl font-extrabold">${esc(a.name)}${a.threshold ? `<div class="text-sm font-medium opacity-80">${a.threshold} min &middot; red at ${limitOf(a)}</div>` : ""}</button>`).join("")
     : '<p class="text-slate-400 col-span-full">No categories yet. Add some in Customization.</p>';
   $("startWrap").classList.toggle("hidden", !(selPerson && selCat));
   $("timerList").innerHTML = timers.length ? timers.map(t => {
@@ -306,6 +308,28 @@ function renderHome() {
       </div>
       <button data-act="discard" data-id="${t.id}" class="w-full h-10 mt-2 text-sm text-red-400">Discard</button></div>`;
   }).join("") : '<p class="text-slate-400 col-span-full">No timers running.</p>';
+  renderBoard();
+}
+/* Today's roster on Home: managers first, then crew by start time, with a Break taken checkbox */
+const hm = t => { const m = /^(\d{1,2}):(\d{2})$/.exec(t || ""); return m ? +m[1] * 60 + +m[2] : null; };
+const toHM = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const fmtT = t => { const m = hm(t); return m === null ? "" : `${Math.floor(m / 60) % 12 || 12}${m % 60 ? ":" + pad(m % 60) : ""}`; };
+const rosterPage = () => pages.find(p => p.type === "shift" && p.homeLink) || pages.find(p => p.type === "shift");
+function renderBoard() {
+  const pg = rosterPage(), box = $("rosterBoard");
+  const ros = pg ? items.filter(i => i.kind === "shift" && i.pageId === pg.id && i.day === today()) : [];
+  box.classList.toggle("hidden", !ros.length); if (!ros.length) return;
+  ros.sort((a, b) => (b.mgr ? 1 : 0) - (a.mgr ? 1 : 0) || String(a.start || "99").localeCompare(String(b.start || "99")) || a.ts - b.ts);
+  const card = i => { const done = !!i.brkAt, rng = i.start || i.end ? `${fmtT(i.start) || "?"}&ndash;${fmtT(i.end) || "?"}` : "";
+    return `<div class="flex items-center gap-2 rounded-xl border-2 ${i.mgr ? "border-amber-400 bg-amber-950/40" : "border-slate-700 bg-slate-900"} pl-3 pr-2 py-1.5 min-h-[3.75rem]">
+      <div class="grow min-w-0"><div class="font-bold truncate">${i.mgr ? "&#9733; " : ""}${esc(shortName(i.name))}</div><div class="text-sm text-slate-300 tnum">${rng}${i.role ? `${rng ? " &middot; " : ""}<b>${esc(i.role)}</b>` : ""}</div></div>
+      <button data-act="brk" data-id="${i.id}" role="checkbox" aria-checked="${done}" class="shrink-0 flex items-center gap-2 h-12 px-3 rounded-lg border-2 ${done ? "border-emerald-600 bg-emerald-950 text-emerald-300" : "border-slate-600"}">
+        <span class="inline-flex w-7 h-7 items-center justify-center rounded-md border-2 ${done ? "bg-emerald-600 border-emerald-600 text-white" : "border-slate-500"}">${done ? "&#10003;" : ""}</span>
+        <span class="text-sm font-semibold leading-tight text-left">Break${i.brk && !done ? `<br><span class="font-normal text-slate-400">${fmtT(i.brk)}</span>` : done ? `<br><span class="font-normal">${new Date(i.brkAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>` : ""}</span></button></div>`; };
+  const mg = ros.filter(i => i.mgr), crew = ros.filter(i => !i.mgr);
+  box.innerHTML = `<div class="flex items-baseline justify-between mb-2"><h2 class="text-xl font-bold">Today's roster</h2><span class="text-sm text-slate-400">${crew.filter(i => i.brkAt).length + mg.filter(i => i.brkAt).length} of ${ros.length} breaks taken</span></div>
+    ${mg.length ? `<div class="grid gap-2 sm:grid-cols-2 mb-2">${mg.map(card).join("")}</div>` : ""}
+    <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">${crew.map(card).join("")}</div>`;
 }
 setInterval(() => timers.forEach(t => {
   const el = document.querySelector(`[data-clock="${t.id}"]`); if (el) el.textContent = mmss(elapsed(t));
@@ -384,8 +408,9 @@ $("catForm").addEventListener("submit", async e => {
   e.preventDefault();
   const name = $("catName").value.trim(); if (!name) return;
   if (cats.some(a => a.name.toLowerCase() === name.toLowerCase())) return alert("That category already exists.");
-  const th = parseFloat($("catTh").value);
-  await addDoc(col("areas"), { name, color: $("catColor").value, threshold: th > 0 ? th : 0 }); e.target.reset(); $("catName").focus();
+  const th = parseFloat($("catTh").value) || 0, lim = parseFloat($("catLim").value) || 0;
+  if (lim > 0 && lim <= th) return alert("The upper limit must be higher than the threshold.");
+  await addDoc(col("areas"), { name, color: $("catColor").value, threshold: th > 0 ? th : 0, limit: th > 0 && lim > 0 ? lim : 0 }); e.target.reset(); $("catName").focus();
 });
 const syncPageForm = () => document.querySelectorAll("#pageForm [data-only]").forEach(el => el.classList.toggle("hidden", $("pageType").value !== "data"));
 $("pageType").addEventListener("input", syncPageForm);
@@ -412,7 +437,9 @@ $("pageRows").addEventListener("change", async e => {
 });
 $("catRows").addEventListener("change", async e => {
   const { aid, f } = e.target.dataset; if (!aid) return;
-  await updateDoc(ref("areas", aid), f === "color" ? { color: e.target.value } : { threshold: Math.max(0, parseFloat(e.target.value) || 0) });
+  const v = Math.max(0, parseFloat(e.target.value) || 0), a = cats.find(c => c.id === aid);
+  if (f === "limit" && v > 0 && v <= (a?.threshold || 0)) { alert("The upper limit must be higher than the threshold."); e.target.value = a.limit || ""; return; }
+  await updateDoc(ref("areas", aid), f === "color" ? { color: e.target.value } : f === "limit" ? { limit: v } : { threshold: v });
 });
 function renderCustom() {
   $("personRows").innerHTML = people.length ? people.map(s => `<li class="flex items-center justify-between py-3"><span class="text-lg">${esc(full(s))}</span><button data-act="delPerson" data-id="${s.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No people yet.</li>';
@@ -441,6 +468,7 @@ function renderCustom() {
     <input type="color" value="${esc(a.color)}" data-aid="${a.id}" data-f="color" aria-label="Colour for ${esc(a.name)}" class="w-14 h-12 rounded bg-transparent">
     <span class="text-lg font-semibold grow">${esc(a.name)}</span>
     <label class="text-sm text-slate-400">Threshold (min) <input type="number" min="0" step="1" value="${a.threshold || ""}" placeholder="none" data-aid="${a.id}" data-f="threshold" class="w-24 h-12 rounded-lg bg-slate-800 border border-slate-600 px-2 ml-1 text-slate-100"></label>
+    <label class="text-sm text-slate-400">Upper limit (min) <input type="number" min="0" step="1" value="${a.limit || ""}" placeholder="${(a.threshold || 0) + 10}" data-aid="${a.id}" data-f="limit" class="w-24 h-12 rounded-lg bg-slate-800 border border-slate-600 px-2 ml-1 text-slate-100"></label>
     <button data-act="delCat" data-id="${a.id}" class="btn-d">Delete</button></li>`).join("") : '<li class="py-3 text-slate-400">No categories yet. Add your first one above.</li>';
 }
 
@@ -450,9 +478,63 @@ const pgNow = () => pages.find(p => p.id === dataId);
 function purgeOld() { // shift plans and tasks only live for the day they were made
   const d = today(); items.filter(i => (i.kind === "shift" || i.kind === "task") && i.day && i.day < d).forEach(i => deleteDoc(ref("items", i.id)));
 }
-setInterval(() => { purgeOld(); renderShift(); renderChecks(); }, 60000);
+setInterval(() => { purgeOld(); renderShift(); renderChecks(); renderBoard(); }, 60000);
 
 let selPreset = null;
+/* Quick roster: type a line the way it is written on paper, e.g. "Casey 6-12 LL", "Michael 6-330 open", "Chris 12-815 close" */
+const cmpT = m => `${Math.floor(m / 60) % 12 || 12}${m % 60 ? pad(m % 60) : ""}`;
+function ptime(str, isEnd, from) { // "6", "615", "330", "3:30", "6p" -> minutes. No am/pm: starts 4-11 are AM, ends are PM
+  const m = /^(\d{1,2}):?(\d{2})?([ap])?m?$/i.exec(str); if (!m) return null;
+  let h = +m[1]; const mi = +(m[2] || 0), x = (m[3] || "").toLowerCase(); if (h > 24 || mi > 59) return null;
+  if (x) h = h % 12 + (x === "p" ? 12 : 0);
+  else if (h <= 12) { if (isEnd) { const pm = h % 12 + 12, am = h % 12; h = from != null && am * 60 + mi > from && pm * 60 + mi - from > 660 ? am : pm; } else h = h >= 4 && h <= 11 ? h : h % 12 + 12; }
+  return h * 60 + mi;
+}
+function prange(tok) { const [a, b] = tok.split("-"), s = ptime(a, false), e = s === null ? null : ptime(b, true, s); return s === null || e === null ? null : [s, e]; }
+function rangeText(s, e) { const t = `${cmpT(s)}-${cmpT(e)}`, r = prange(t); return r && r[0] === s && r[1] === e ? t : `${cmpT(s)}${s >= 720 ? "p" : "a"}-${cmpT(e)}${e >= 720 ? "p" : "a"}`; }
+function findPerson(q) {
+  q = q.toLowerCase().trim(); if (!q) return null;
+  const key = s => `${s.first} ${s.last}`.toLowerCase(), ex = people.filter(s => key(s) === q || s.first.toLowerCase() === q);
+  const hit = ex.length ? ex : people.filter(s => key(s).startsWith(q));
+  return hit.length === 1 ? hit[0] : hit.length ? { amb: hit } : null;
+}
+function parseLine(ln) {
+  const tk = ln.replace(/\([^)]*break[^)]*\)/gi, " ").replace(/[()]/g, " ").replace(/\s*[-\u2013\u2014]\s*/g, "-").replace(/\bor\b/gi, " ").trim().split(/\s+/).filter(Boolean);
+  const isR = t => /^\d[\d:]*[ap]?m?-\d[\d:]*[ap]?m?$/i.test(t), isK = t => /^(open|close|mgr|manager)$/i.test(t), isB = t => /^b(rk)?\d/i.test(t);
+  let stop = tk.findIndex(t => isR(t) || isK(t) || isB(t)); if (stop < 0) stop = tk.length;
+  let p = null, k = Math.min(stop, 3);
+  for (; k >= 1; k--) { p = findPerson(tk.slice(0, k).join(" ")); if (p) break; }
+  if (!p) return { err: "name not found" }; if (p.amb) return { err: "which " + p.amb[0].first + "?" };
+  const v = {}, pos = [];
+  for (const t of tk.slice(k)) {
+    if (isR(t)) { const r = prange(t); if (!r) return { err: "can't read the times" }; v.start = toHM(r[0]); v.end = toHM(r[1]); }
+    else if (isK(t)) { v.mgr = true; if (/^(open|close)$/i.test(t)) pos.push(t[0].toUpperCase() + t.slice(1).toLowerCase()); }
+    else if (isB(t)) { const b = ptime(t.replace(/^b(rk)?/i, ""), false); if (b !== null) v.brk = toHM(b); }
+    else if (!/^x$/i.test(t)) pos.push(t.toUpperCase().length <= 3 ? t.toUpperCase() : t);
+  }
+  if (pos.length) v.role = pos.join(" ");
+  return { p, v };
+}
+const qaMem = () => { try { return JSON.parse(localStorage.getItem("tp_qa") || "{}"); } catch { return {}; } };
+const qaLearn = (kind, val) => { try { const m = qaMem(); (m[kind] = m[kind] || {})[val] = (m[kind][val] || 0) + 1; localStorage.setItem("tp_qa", JSON.stringify(m)); } catch {} };
+async function quickAdd() {
+  const pg = pgNow(); if (!pg) return;
+  const lines = $("qaText").value.split(/\n/).map(x => x.trim()).filter(Boolean), bad = [], has = id => colsOf(pg).some(c => c.id === id); let ok = 0;
+  for (const ln of lines) {
+    const r = parseLine(ln); if (r.err) { bad.push(`${ln}   \u2190 ${r.err}`); continue; }
+    const id = `${pg.id}_${r.p.id}_${today()}`, v = {};
+    for (const f of ["start", "end", "role", "brk"]) if (r.v[f] !== undefined && has(f)) v[f] = r.v[f];
+    if (r.v.mgr) v.mgr = true;
+    await setDoc(ref("items", id), { kind: "shift", pageId: pg.id, personId: r.p.id, name: full(r.p), day: today(), ts: items.find(i => i.id === id)?.ts ?? Date.now() + ok, ...v }, { merge: true });
+    if (v.start && v.end) qaLearn("t", rangeText(hm(v.start), hm(v.end))); if (v.role && !/^(Open|Close)$/.test(v.role)) qaLearn("r", v.role);
+    ok++;
+  }
+  $("qaText").value = bad.join("\n");
+  $("qaMsg").textContent = bad.length ? `${ok} added. Fix the ${bad.length === 1 ? "line" : "lines"} left in the box.` : ok ? `${ok} added.` : "Type or tap a name first.";
+  $("qaMsg").className = "text-sm " + (bad.length || !ok ? "text-red-400" : "text-emerald-400");
+}
+$("qaGo").addEventListener("click", quickAdd);
+$("qaText").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); quickAdd(); } });
 async function addShift(personId) {
   const pg = pgNow(), p = people.find(x => x.id === personId); if (!pg || !p) return;
   const id = `${pg.id}_${p.id}_${today()}`; if (items.some(i => i.id === id)) return;
@@ -467,19 +549,24 @@ function renderShift() {
   if (page !== "shift") return;
   const pg = pgNow(); if (!pg) return showPage("home");
   const cols = colsOf(pg), n = cols.length;
-  const roster = items.filter(i => i.kind === "shift" && i.pageId === pg.id && i.day === today()).sort((a, b) => a.ts - b.ts), on = new Set(roster.map(i => i.personId));
+  const roster = items.filter(i => i.kind === "shift" && i.pageId === pg.id && i.day === today()).sort((a, b) => (b.mgr ? 1 : 0) - (a.mgr ? 1 : 0) || String(a.start || "99").localeCompare(String(b.start || "99")) || a.ts - b.ts), on = new Set(roster.map(i => i.personId));
   $("shiftTitle").textContent = pg.name; $("shiftDay").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
   $("homeLink").checked = !!pg.homeLink;
   if (document.activeElement !== $("homeCol")) { const cur = homeColOf(pg); $("homeCol").innerHTML = cols.map(c => `<option value="${c.id}" ${c.id === cur ? "selected" : ""}>${esc(c.label)}</option>`).join(""); }
   $("shiftPeople").innerHTML = people.filter(s => !on.has(s.id)).map(s => `<div data-drag="${s.id}" style="touch-action:none;user-select:none;--c:#fff" class="pick rounded-xl px-4 py-3 text-lg font-bold cursor-grab">${esc(full(s))}</div>`).join("")
     || '<p class="text-sm text-slate-400">Everyone is on the roster.</p>';
+  { const pre = items.filter(i => i.kind === "preset" && i.pageId === pg.id), mem = qaMem(), top = o => Object.keys(o || {}).sort((a, b) => o[b] - o[a]).slice(0, 8), chip = (k, v, cls) => `<button data-act="qa" data-kind="${k}" data-ins="${esc(v)}" class="h-11 px-3 rounded-lg font-semibold ${cls}">${esc(v)}</button>`;
+    const times = [...new Set([...top(mem.t), ...pre.filter(x => hm(x.start) !== null && hm(x.end) !== null).map(x => rangeText(hm(x.start), hm(x.end)))])];
+    const roles = [...new Set(["open", "close", ...top(mem.r), ...pre.map(x => x.role).filter(Boolean), ...roster.map(x => x.role).filter(Boolean)])].slice(0, 12);
+    $("qaChips").innerHTML = [[people.filter(s => !on.has(s.id)).map(s => chip("p", s.first, "bg-white text-slate-900")), "Who"], [times.map(v => chip("t", v, "bg-sky-900 text-sky-100")), "Hours"], [roles.map(v => chip("r", v, "bg-slate-700")), "Position"]]
+      .filter(([c]) => c.length).map(([c, l]) => `<div class="flex flex-wrap items-center gap-2"><span class="w-16 text-xs text-slate-400">${l}</span>${c.join("")}</div>`).join(""); }
   if ([$("shiftDrop"), $("presetRows")].some(el => el.contains(document.activeElement) && document.activeElement.tagName === "INPUT")) return; // don't wipe a box being typed in
-  const w = `min-width:${(14 + 7 * n).toFixed(1)}rem`, grid = `grid-template-columns:8rem repeat(${n},minmax(6.5rem,1fr)) 5.5rem;${w}`, pgrid = `grid-template-columns:7rem 8rem repeat(${n},minmax(6.5rem,1fr)) 5.5rem;min-width:${(22 + 7 * n).toFixed(1)}rem`;
-  const box = (c, attrs, val) => `<input ${attrs} data-f="${c.id}" type="${c.type}" ${c.type === "number" ? 'step="any" inputmode="decimal"' : ""} value="${esc(val ?? "")}" aria-label="${esc(c.label)}" class="inp !h-11 !text-base !px-2">`;
+  const w = `min-width:${(14 + 7 * n).toFixed(1)}rem`, grid = `grid-template-columns:2.5rem 6.5rem repeat(${n},minmax(5.5rem,1fr)) 2.5rem;min-width:${(11 + 6 * n).toFixed(1)}rem`, pgrid = `grid-template-columns:7rem 8rem repeat(${n},minmax(6.5rem,1fr)) 5.5rem;min-width:${(22 + 7 * n).toFixed(1)}rem`;
+  const box = (c, attrs, val) => `<input ${attrs} data-f="${c.id}" type="${c.type}" ${c.type === "number" ? 'step="any" inputmode="decimal"' : ""} value="${esc(val ?? "")}" aria-label="${esc(c.label)}" class="inp !h-10 !text-sm !px-1.5">`;
   const labels = cols.map(c => `<span class="truncate">${esc(c.label)}</span>`).join("");
-  $("shiftDrop").innerHTML = roster.length ? `<div class="grid gap-2 text-xs text-slate-400 px-2" style="${grid}"><span>Person</span>${labels}<span></span></div>` +
-    roster.map(i => `<div data-roster="${i.id}" class="grid gap-2 items-center rounded-lg bg-slate-900 border border-slate-700 p-2" style="${grid}"><button data-act="applyPreset" data-id="${i.id}" class="text-left font-bold truncate">${esc(shortName(i.name))}</button>${cols.map(c => box(c, `data-iid="${i.id}"`, i[c.id])).join("")}<button data-act="delItem" data-id="${i.id}" class="btn-d !h-11 !px-2 !text-sm">Remove</button></div>`).join("")
-    : '<p class="text-slate-400 p-6 text-center">Drag people here</p>';
+  $("shiftDrop").innerHTML = roster.length ? `<div class="grid gap-1.5 text-xs text-slate-400 px-1.5" style="${grid}"><span>Mgr</span><span>Person</span>${labels}<span></span></div>` +
+    roster.map(i => `<div data-roster="${i.id}" class="grid gap-1.5 items-center rounded-lg bg-slate-900 border ${i.mgr ? "border-amber-400" : "border-slate-700"} p-1.5" style="${grid}"><button data-act="mgr" data-id="${i.id}" aria-pressed="${!!i.mgr}" aria-label="Manager for the day" class="h-10 rounded-lg font-bold ${i.mgr ? "bg-amber-400 text-slate-900" : "bg-slate-800 text-slate-400"}">&#9733;</button><button data-act="applyPreset" data-id="${i.id}" class="text-left font-bold truncate text-sm">${esc(shortName(i.name))}</button>${cols.map(c => box(c, `data-iid="${i.id}"`, i[c.id])).join("")}<button data-act="delItem" data-id="${i.id}" class="btn-d !h-10 !px-2" aria-label="Remove ${esc(shortName(i.name))}">&#10005;</button></div>`).join("")
+    : '<p class="text-slate-400 p-4 text-center">Nobody yet. Write the roster above.</p>';
   const presets = items.filter(i => i.kind === "preset" && i.pageId === pg.id).sort((a, b) => a.ts - b.ts);
   $("presetRows").innerHTML = presets.length ? `<div class="grid gap-2 text-xs text-slate-400 px-2" style="${pgrid}"><span>Drag me</span><span>Name</span>${labels}<span></span></div>` +
     presets.map(p => `<div class="grid gap-2 items-center rounded-lg bg-slate-900 border border-slate-700 p-2" style="${pgrid}"><div data-preset="${p.id}" style="touch-action:none;user-select:none;--c:#14b8a6" class="pick ${p.id === selPreset ? "sel" : ""} rounded-lg px-2 py-2 text-sm font-bold truncate cursor-grab">${esc(p.name || "Preset")}</div>
@@ -846,6 +933,7 @@ else onAuthStateChanged(auth, user => {
           <input id="keepAwake" type="checkbox" class="w-7 h-7 accent-emerald-500"> Keep screen on</label>
         <span id="awakeMsg" class="text-sm text-slate-400" role="status"></span>
       </div>
+      <div id="rosterBoard" class="hidden"></div>
       <div><h2 class="text-xl font-bold mb-2">1. Who is timing?</h2><div id="personPick" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"></div></div>
       <div><h2 class="text-xl font-bold mb-2">2. Which category?</h2><div id="catPick" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div></div>
       <div id="startWrap" class="hidden"><button id="startBtn" data-act="start" class="w-full h-24 rounded-2xl bg-white text-slate-900 text-3xl font-extrabold">START TIMER</button></div>
@@ -885,14 +973,25 @@ else onAuthStateChanged(auth, user => {
         <label class="inline-flex items-center gap-2 text-sm text-slate-300">Small text above names: <select id="homeCol" class="inp !h-11 !w-auto !text-base"></select></label>
         <span class="text-sm text-slate-400">When on, Home only lists people on today's roster.</span>
       </div>
-      <p class="text-sm text-slate-400">Drag people into the roster (or tap a name), then fill in the boxes on their line. The roster clears itself the next day. Add or rename boxes in Customization.</p>
+      <div class="bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-3">
+        <h3 class="font-bold">Write the roster</h3>
+        <p class="text-sm text-slate-400">One person per line, just like the paper: <b class="text-slate-200">Casey 6-12 LL</b> &middot; <b class="text-slate-200">Bodhi 615-330 A</b> &middot; <b class="text-slate-200">Michael 6-330 open</b> &middot; <b class="text-slate-200">Chris 12-815 close</b>. Open or close makes them a manager. Tap the buttons to build a line without typing. Typing a person again updates them.</p>
+        <div id="qaChips" class="space-y-2"></div>
+        <textarea id="qaText" rows="3" enterkeyhint="done" autocapitalize="off" placeholder="Casey 6-12 LL" aria-label="Roster lines" class="inp !h-auto py-3"></textarea>
+        <div class="flex flex-wrap items-center gap-3"><button id="qaGo" class="btn btn-w h-14 text-xl grow sm:grow-0 sm:px-10">ADD TO ROSTER</button><span id="qaMsg" class="text-sm" role="status"></span></div>
+      </div>
+      <div><h3 class="font-bold mb-2">Today's roster <span class="text-sm font-normal text-slate-400">&#9733; = manager for the day. The roster clears itself the next day.</span></h3><div id="shiftDrop" class="overflow-x-auto min-h-[5rem] rounded-xl border-2 border-dashed border-slate-600 p-2 space-y-1.5"></div></div>
+      <details class="bg-slate-900 border border-slate-700 rounded-xl p-3"><summary class="font-bold cursor-pointer min-h-[2.5rem] flex items-center">More: drag people and shift presets</summary>
+        <div class="space-y-4 mt-3">
+        <p class="text-sm text-slate-400">The older way. Drag people into the roster (or tap a name), then fill in the boxes. Add or rename boxes in Customization.</p>
       <div><h3 class="font-bold mb-2">People</h3><div id="shiftPeople" class="flex flex-wrap gap-2"></div></div>
-      <div><h3 class="font-bold mb-2">Today's roster</h3><div id="shiftDrop" class="overflow-x-auto min-h-[8rem] rounded-xl border-2 border-dashed border-slate-600 p-2 space-y-2"></div></div>
       <div>
         <div class="flex items-center justify-between mb-1"><h3 class="font-bold">Shift presets</h3><button data-act="addPreset" class="btn btn-o !h-11">+ Add preset</button></div>
         <p class="text-sm text-slate-400 mb-2">Fill in a preset, then drag it onto a person in the roster to copy its times across. Or tap the preset, then tap the person's name. Presets stay until you delete them.</p>
         <div id="presetRows" class="overflow-x-auto space-y-2"></div>
       </div>
+        </div>
+      </details>
     </section>
 
     <!-- NOTEPAD PAGE -->
@@ -934,11 +1033,12 @@ else onAuthStateChanged(auth, user => {
       </div>
       <div id="cp-cats" class="hidden">
         <h2 class="text-xl font-bold mb-1">Categories</h2>
-        <p class="text-sm text-slate-400 mb-3">Add a threshold in minutes to show a mood face on the timer. It stays happy until the threshold, then turns sad and is crying 10 minutes later. Leave it blank for no face.</p>
-        <form id="catForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_auto_1fr_auto]">
+        <p class="text-sm text-slate-400 mb-3">Threshold = minutes before the timer face turns yellow. Upper limit = minutes when it turns red (leave blank for threshold + 10). No threshold means no face.</p>
+        <form id="catForm" onsubmit="return false" class="grid gap-2 sm:grid-cols-[2fr_auto_1fr_1fr_auto]">
           <input id="catName" required maxlength="30" placeholder="Category name" aria-label="Category name" class="inp">
           <input id="catColor" type="color" value="#14b8a6" aria-label="Category colour" class="inp !p-1 sm:!w-20">
           <input id="catTh" type="number" min="0" step="1" placeholder="Threshold (min)" aria-label="Threshold in minutes" class="inp">
+          <input id="catLim" type="number" min="0" step="1" placeholder="Upper limit (min)" aria-label="Upper limit in minutes" class="inp">
           <button class="btn btn-w">Add category</button>
         </form>
         <ul id="catRows" class="mt-3 divide-y divide-slate-800"></ul>
